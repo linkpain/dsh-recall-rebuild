@@ -1,0 +1,30 @@
+# dsh-recall-rebuild 组合包层：安装（dsh plugin --profile <name> add dsh-recall-rebuild）
+# 后自动挂载插件行，无需再手改 profile 的 cordis.patch.yml。
+# 覆盖配置请在 profile 自己的 cordis.patch.yml 里写顶层裸 patch（直接 id:，不要包 insert:，
+# 同 id 再 insert 会报 duplicate loader entry id 启动失败）：
+#   - id: recall-rebuild
+#     name: dsh-recall-rebuild
+#     config: { enabled: true }   # 键按行整体替换，不深合并
+- insert:
+    - id: recall-rebuild
+      name: dsh-recall-rebuild
+      # config:                      # 全部字段有默认值，按需覆盖：
+      #   enabled: true              #   总开关
+      #   dataDir: ''                #   记忆库目录；空 = $DSH_HOME/memory（默认）
+      #   source: auto               #   记忆来源：auto | prime（当前支持 prime-memory 库）
+      #   rebuild:
+      #     enabled: true            #   重建式回忆开关（false = 退化为原文检索注入）
+      #     maxResults: 5            #   每轮检索的记忆条数
+      #     maxMemoryChars: 400      #   单条记忆进重建 prompt 的字符上限
+      #     maxTotalChars: 2000      #   进重建 prompt 的总字符上限
+      #     maxOutputChars: 600      #   重建片段输出字符上限
+      #     temperature: 0.7
+      #     maxTokens: 1024
+      #     timeoutMs: 8000          #   重建总超时（超时跳过本轮，绝不阻塞对话）
+      #   inject:
+      #     strategy: replace        #   replace = 替换其它插件（prime-memory）的原文注入；append = 追加
+      #     maxChars: 1200           #   注入单条字符上限
+      #     includeSources: true     #   注入时附记忆来源 id 标注
+      #   query:
+      #     tailMessages: 8          #   召回查询取会话末尾消息条数
+      #     maxChars: 1200           #   召回查询字符上限
