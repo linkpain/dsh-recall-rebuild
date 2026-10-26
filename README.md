@@ -6,16 +6,14 @@
 [![DSH](https://img.shields.io/badge/dsh-0.1.0--rc.2%20%E2%80%93%200.2.1--rc.3-4c6ef5)](https://github.com/deepseek-ai/DeepSeek-Harness)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522.5-339933)](https://nodejs.org)
 
-> **重建式回忆增强插件(DeepSeek Harness)**:把记忆插件从"播放录音"升级为"再体验"。
-> **Enhancer for DSH memory plugins**: turns memory recall from *tape playback* into *re-experiencing*.
+> **重建式回忆增强插件(DeepSeek Harness)**:增强现有记忆插件,让"回忆"从"念档案"变成"想起来了"。
+> **Enhancer for DSH memory plugins**: recall that feels like *remembering*, not *quoting a file*.
 
-现有的 DSH 记忆插件(如 `dsh-prime-memory`)已经把"记住"做得很好了——但它们"回忆"的方式,是**播放录音**。
-
-本插件是这些插件的**增强层**:只读它们的记忆库,在每次模型推理前,把检索到的记忆碎片交给 LLM **生成式重建**为带语境与情绪的回忆片段再注入——像人一样"想起来了",而不是"查到了"。
+`dsh-prime-memory` 等现有 DSH 记忆插件已经把**存储层**做得非常扎实——跨会话捕获、蒸馏、持久化都很成熟,值得先装它们。本插件**不做重复的事**,只在一个环节上做增强:**回忆的呈现方式**——把检索到的记忆碎片交给 LLM 重建为带语境与情绪的回忆片段再注入,让"想起来了"更自然,而不是"念档案"。
 
 ---
 
-## 痛点:记忆不该是"播放录音"
+## 痛点:回忆不应该是"念档案"
 
 **传统记忆插件(录音式)**:检索 → 把原文/摘要塞进上下文。
 
@@ -147,7 +145,7 @@ MIT
 
 ## English Overview
 
-**dsh-recall-rebuild** is an *enhancer* for memory plugins in [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (DSH). Existing memory plugins such as `dsh-prime-memory` handle *storage* well, but their recall is essentially "tape playback" — raw snippets injected into context.
+**dsh-recall-rebuild** is an *enhancer* for memory plugins in [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (DSH). Existing memory plugins such as `dsh-prime-memory` already handle *storage* very well — cross-session capture, distillation and persistence are mature, so install them first. This plugin does **not** duplicate that work; it enhances a single layer: **how memories are recalled** — instead of injecting raw snippets as-is, it has the LLM reconstruct them into contextual recollections, so "remembering" feels natural rather than like quoting a file.
 
 This plugin upgrades the **recall/presentation layer**:
 
