@@ -1,5 +1,6 @@
 # dsh-recall-rebuild
 
+[![npm version](https://img.shields.io/npm/v/dsh-recall-rebuild)](https://www.npmjs.com/package/dsh-recall-rebuild)
 [![License: MIT](https://img.shields.io/github/license/linkpain/dsh-recall-rebuild)](https://github.com/linkpain/dsh-recall-rebuild/blob/main/LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/linkpain/dsh-recall-rebuild)](https://github.com/linkpain/dsh-recall-rebuild/stargazers)
 [![DSH](https://img.shields.io/badge/dsh-0.1.0--rc.2%20%E2%80%93%200.2.1--rc.3-4c6ef5)](https://github.com/deepseek-ai/DeepSeek-Harness)
@@ -119,7 +120,6 @@ flowchart LR
 - [ ] 适配更多记忆库来源(`dsh-mneme` 等),做成可插拔 adapter;
 - [ ] IM 用户级命名空间隔离(跨 QQ/微信的同一人记忆共享);
 - [ ] 重建质量可观测:注入效果对比开关 + 每轮重建日志;
-- [ ] 发布到 npm(`dsh plugin add dsh-recall-rebuild` 一键安装);
 - [ ] 睡眠巩固 / 联想扩散(更接近人脑的长期记忆子系统的后续阶段)。
 
 ## 局限(如实声明)
