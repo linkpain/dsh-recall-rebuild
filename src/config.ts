@@ -45,6 +45,22 @@ export interface QueryOptions {
   maxChars: number;
 }
 
+/** IM 用户级命名空间隔离选项。 */
+export interface UserIsolationOptions {
+  /**
+   * 隔离模式:
+   * - 'off':不过滤(所有用户共享全部记忆,旧行为);
+   * - 'auto':剔除「明确属于其他用户」的记忆,无主记忆默认可见(命中后归位);
+   * - 'strict':只注入「已归属当前用户」的记忆,新用户零记忆起步(随会话命中逐渐归位)。
+   * 桌面直接对话(识别不到 IM 用户)时任何模式都不过滤。
+   */
+  isolation: 'off' | 'auto' | 'strict';
+  /** 归属索引目录;空 = <DSH_HOME>/recall-rebuild/namespaces(缺省 ~/.dsh/...)。 */
+  isolationDir: string;
+  /** 覆盖内置 <dsh_im_source> 解析正则(不同桥接插件字段不同时可自定义);空 = 内置。 */
+  sourceTagPattern: string;
+}
+
 export interface RecallRebuildConfig {
   /** 总开关。 */
   enabled: boolean;
@@ -61,6 +77,7 @@ export interface RecallRebuildConfig {
   rebuild: RebuildOptions;
   inject: InjectOptions;
   query: QueryOptions;
+  user: UserIsolationOptions;
 }
 
 export const recallRebuildSchema = Schema.object({
@@ -85,5 +102,10 @@ export const recallRebuildSchema = Schema.object({
   query: Schema.object({
     tailMessages: Schema.number().min(1).max(30).default(8),
     maxChars: Schema.number().min(100).max(4000).default(1200),
+  }).default({}),
+  user: Schema.object({
+    isolation: Schema.union(['off', 'auto', 'strict']).default('auto'),
+    isolationDir: Schema.string().default(''),
+    sourceTagPattern: Schema.string().default(''),
   }).default({}),
 }).default({});

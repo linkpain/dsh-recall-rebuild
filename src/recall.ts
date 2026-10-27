@@ -17,6 +17,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { RecallRebuildConfig } from './config.js';
 import { rebuildMemory } from './rebuild.js';
 import type { LoggerLike, MemoryStore } from './store.js';
+import { extractUserKey, type NamespaceStore } from './namespace.js';
 
 interface MsgLike {
   source?: { kind?: string; plugin?: string; form?: string };
@@ -102,6 +103,7 @@ export function registerRecallRebuild(
   store: MemoryStore,
   cfg: RecallRebuildConfig,
   logger: LoggerLike,
+  namespaces?: NamespaceStore,
 ): void {
   if (!cfg.enabled) return;
   // cordis 的事件键是插件可扩展的字符串;此处收窄为所需的最小监听器形状
@@ -125,8 +127,19 @@ export function registerRecallRebuild(
       try {
         const query = buildRecallQuery(payload.messages, cfg);
         if (!query) return decision;
-        const memories = store.search(query, cfg.rebuild.maxResults);
+        // 提取当前 IM 用户键(桌面/无法识别 → null → 不做隔离)
+        const userKey = namespaces
+          ? extractUserKey(decision.messages.map(blocksToText), cfg.user.sourceTagPattern)
+          : null;
+        let memories = store.search(query, cfg.rebuild.maxResults);
         if (memories.length === 0) return decision;
+        // 用户级命名空间隔离:过滤"明确属于其他用户"的记忆
+        if (namespaces) {
+          memories = namespaces.filter(memories, userKey, cfg.user.isolation);
+          if (memories.length === 0) return decision;
+          // 只把"本轮实际保留"的候选记为当前用户归属(无主记忆随命中归位)
+          namespaces.recordHits(userKey, memories);
+        }
         const rebuilt = await rebuildMemory(ctx, memories, query, cfg.rebuild, payload.signal, logger);
         if (!rebuilt || !rebuilt.text) return decision;
         const injection = buildInjectionMessage(rebuilt.text, rebuilt.sourceIds, cfg);

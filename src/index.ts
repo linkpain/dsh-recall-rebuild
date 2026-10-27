@@ -13,6 +13,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import { recallRebuildSchema, type RecallRebuildConfig } from './config.js';
 import { openMemorySource, type LoggerLike } from './store.js';
 import { registerRecallRebuild } from './recall.js';
+import { NamespaceStore } from './namespace.js';
 
 export const name = 'recall-rebuild';
 export const inject = ['llm'];
@@ -34,6 +35,23 @@ function resolveDataDir(config: RecallRebuildConfig, logger: LoggerLike): string
   return fallback;
 }
 
+/** 用户隔离归属目录:<DSH_HOME>/recall-rebuild/namespaces(缺省 ~/.dsh/recall-rebuild/namespaces)。 */
+function resolveIsolationDir(config: RecallRebuildConfig, logger: LoggerLike): string {
+  if (config.user.isolationDir) return config.user.isolationDir;
+  try {
+    const home = dshHomePath();
+    if (home) return path.join(home, 'recall-rebuild', 'namespaces');
+  } catch {
+    /* 落到兜底 */
+  }
+  const base = process.env.HOME || process.env.USERPROFILE || '';
+  const fallback = base ? path.join(base, '.dsh', 'recall-rebuild', 'namespaces') : '';
+  if (!fallback) {
+    logger.warn(`[recall-rebuild] 无法确定用户隔离目录,请在 config.user.isolationDir 显式指定`);
+  }
+  return fallback;
+}
+
 export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<void> {
   const logger: LoggerLike = ctx.logger;
   const dataDir = resolveDataDir(config, logger);
@@ -44,6 +62,10 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
   const store = openMemorySource(config.source, { dataDir, cwd, logger });
   ctx.effect(() => () => store.close());
 
+  // IM 用户级命名空间隔离(自己的目录,绝不写底层记忆库)
+  const namespaces = new NamespaceStore(resolveIsolationDir(config, logger), logger);
+  namespaces.ensureDir();
+
   if (store.ok) {
     logger.info(`[recall-rebuild] 已只读挂载记忆库: ${store.label}`);
   } else {
@@ -53,9 +75,10 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
     );
   }
 
-  registerRecallRebuild(ctx, store, config, logger);
+  registerRecallRebuild(ctx, store, config, logger, namespaces);
   logger.info(
     `[recall-rebuild] 重建式回忆增强就绪 ` +
-      `(rebuild=${config.rebuild.enabled}, inject=${config.inject.strategy}, source=${config.source})`,
+      `(rebuild=${config.rebuild.enabled}, inject=${config.inject.strategy}, source=${config.source}, ` +
+      `isolation=${config.user.isolation})`,
   );
 }
