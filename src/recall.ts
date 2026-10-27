@@ -18,6 +18,7 @@ import type { RecallRebuildConfig } from './config.js';
 import { rebuildMemory } from './rebuild.js';
 import type { LoggerLike, MemoryStore } from './store.js';
 import { extractUserKey, type NamespaceStore } from './namespace.js';
+import type { RebuildLogger } from './observability.js';
 
 interface MsgLike {
   source?: { kind?: string; plugin?: string; form?: string };
@@ -104,6 +105,7 @@ export function registerRecallRebuild(
   cfg: RecallRebuildConfig,
   logger: LoggerLike,
   namespaces?: NamespaceStore,
+  obsLog?: RebuildLogger,
 ): void {
   if (!cfg.enabled) return;
   // cordis 的事件键是插件可扩展的字符串;此处收窄为所需的最小监听器形状
@@ -125,6 +127,7 @@ export function registerRecallRebuild(
       const hasNewUser = decision.messages.some((m) => m.source?.kind === 'user');
       if (!hasNewUser) return decision;
       try {
+        const startedAt = Date.now();
         const query = buildRecallQuery(payload.messages, cfg);
         if (!query) return decision;
         // 提取当前 IM 用户键(桌面/无法识别 → null → 不做隔离)
@@ -132,25 +135,49 @@ export function registerRecallRebuild(
           ? extractUserKey(decision.messages.map(blocksToText), cfg.user.sourceTagPattern)
           : null;
         let memories = store.search(query, cfg.rebuild.maxResults);
-        if (memories.length === 0) return decision;
+        const logBase = () => ({
+          userKey,
+          isolation: cfg.user.isolation,
+          query,
+          hitCount: memories.length,
+          memoryIds: memories.map((m) => m.id),
+          fragments: memories.map((m) => m.content),
+          rebuilt: '',
+          injection: 'none' as const,
+          latencyMs: Date.now() - startedAt,
+        });
+        if (memories.length === 0) {
+          if (obsLog) obsLog.log({ ...logBase() });
+          return decision;
+        }
         // 用户级命名空间隔离:过滤"明确属于其他用户"的记忆
         if (namespaces) {
           memories = namespaces.filter(memories, userKey, cfg.user.isolation);
-          if (memories.length === 0) return decision;
+          if (memories.length === 0) {
+            if (obsLog) obsLog.log({ ...logBase(), error: '隔离过滤后无可用记忆' });
+            return decision;
+          }
           // 只把"本轮实际保留"的候选记为当前用户归属(无主记忆随命中归位)
           namespaces.recordHits(userKey, memories);
         }
         const rebuilt = await rebuildMemory(ctx, memories, query, cfg.rebuild, payload.signal, logger);
-        if (!rebuilt || !rebuilt.text) return decision;
+        if (!rebuilt || !rebuilt.text) {
+          if (obsLog) obsLog.log({ ...logBase(), error: '重建返回空,跳过注入' });
+          return decision;
+        }
         const injection = buildInjectionMessage(rebuilt.text, rebuilt.sourceIds, cfg);
+        let injectionKind: 'replaced' | 'appended' | 'none' = 'appended';
         if (cfg.inject.strategy === 'replace') {
           const idx = decision.messages.findIndex(isOtherPluginRecall);
           if (idx >= 0) {
             const msgs = [...decision.messages];
             msgs[idx] = injection;
+            injectionKind = 'replaced';
+            if (obsLog) obsLog.log({ ...logBase(), rebuilt: rebuilt.text, injection: injectionKind, latencyMs: Date.now() - startedAt });
             return { kind: 'enter', messages: msgs };
           }
         }
+        if (obsLog) obsLog.log({ ...logBase(), rebuilt: rebuilt.text, injection: injectionKind, latencyMs: Date.now() - startedAt });
         return { kind: 'enter', messages: [injection, ...decision.messages] };
       } catch (err) {
         logger.warn(

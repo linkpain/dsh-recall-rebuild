@@ -14,6 +14,7 @@ import { recallRebuildSchema, type RecallRebuildConfig } from './config.js';
 import { openMemorySource, type LoggerLike } from './store.js';
 import { registerRecallRebuild } from './recall.js';
 import { NamespaceStore } from './namespace.js';
+import { RebuildLogger } from './observability.js';
 
 export const name = 'recall-rebuild';
 export const inject = ['llm'];
@@ -52,6 +53,23 @@ function resolveIsolationDir(config: RecallRebuildConfig, logger: LoggerLike): s
   return fallback;
 }
 
+/** 重建日志目录:<DSH_HOME>/recall-rebuild/logs(缺省 ~/.dsh/recall-rebuild/logs)。 */
+function resolveLogDir(config: RecallRebuildConfig, logger: LoggerLike): string {
+  if (config.observability.logDir) return config.observability.logDir;
+  try {
+    const home = dshHomePath();
+    if (home) return path.join(home, 'recall-rebuild', 'logs');
+  } catch {
+    /* 落到兜底 */
+  }
+  const base = process.env.HOME || process.env.USERPROFILE || '';
+  const fallback = base ? path.join(base, '.dsh', 'recall-rebuild', 'logs') : '';
+  if (!fallback) {
+    logger.warn(`[recall-rebuild] 无法确定日志目录,请在 config.observability.logDir 显式指定`);
+  }
+  return fallback;
+}
+
 export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<void> {
   const logger: LoggerLike = ctx.logger;
   const dataDir = resolveDataDir(config, logger);
@@ -66,6 +84,14 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
   const namespaces = new NamespaceStore(resolveIsolationDir(config, logger), logger);
   namespaces.ensureDir();
 
+  // 重建质量可观测:每轮 JSONL 日志 + 统计(自己的目录)
+  const obsLog = new RebuildLogger({
+    logDir: resolveLogDir(config, logger),
+    enabled: config.observability.logEnabled,
+    includeFragments: config.observability.includeFragments,
+    logger,
+  });
+
   if (store.ok) {
     logger.info(`[recall-rebuild] 已只读挂载记忆库: ${store.label}`);
   } else {
@@ -75,10 +101,10 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
     );
   }
 
-  registerRecallRebuild(ctx, store, config, logger, namespaces);
+  registerRecallRebuild(ctx, store, config, logger, namespaces, obsLog);
   logger.info(
     `[recall-rebuild] 重建式回忆增强就绪 ` +
       `(rebuild=${config.rebuild.enabled}, inject=${config.inject.strategy}, source=${config.source}, ` +
-      `isolation=${config.user.isolation})`,
+      `isolation=${config.user.isolation}, log=${config.observability.logEnabled})`,
   );
 }

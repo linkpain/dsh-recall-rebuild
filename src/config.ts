@@ -61,6 +61,18 @@ export interface UserIsolationOptions {
   sourceTagPattern: string;
 }
 
+/** 重建质量可观测选项。 */
+export interface ObservabilityOptions {
+  /** 每轮重建审计日志开关(JSON Lines,按天滚动)。 */
+  logEnabled: boolean;
+  /** 日志目录;空 = <DSH_HOME>/recall-rebuild/logs。 */
+  logDir: string;
+  /** 日志是否记录原始检索碎片(与重建片段同屏对比);false 只记重建结果。 */
+  includeFragments: boolean;
+  /** 是否写统计文件 stats.json(30s 节流)。 */
+  statsEnabled: boolean;
+}
+
 export interface RecallRebuildConfig {
   /** 总开关。 */
   enabled: boolean;
@@ -78,6 +90,7 @@ export interface RecallRebuildConfig {
   inject: InjectOptions;
   query: QueryOptions;
   user: UserIsolationOptions;
+  observability: ObservabilityOptions;
 }
 
 export const recallRebuildSchema = Schema.object({
@@ -107,5 +120,11 @@ export const recallRebuildSchema = Schema.object({
     isolation: Schema.union(['off', 'auto', 'strict']).default('auto'),
     isolationDir: Schema.string().default(''),
     sourceTagPattern: Schema.string().default(''),
+  }).default({}),
+  observability: Schema.object({
+    logEnabled: Schema.boolean().default(true),
+    logDir: Schema.string().default(''),
+    includeFragments: Schema.boolean().default(true),
+    statsEnabled: Schema.boolean().default(true),
   }).default({}),
 }).default({});
