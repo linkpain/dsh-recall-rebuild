@@ -385,7 +385,6 @@ check('cmd:大小写不敏感', parseCommandLine('LIST').sub === 'list');
 
 const cmdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-cmd-'));
 const cstore = new ConsolidatedStore(cmdDir, logger);
-const cstore = new ConsolidatedStore(cmdDir, logger);
 cstore.load();
 const nowC = Date.now();
 const mkMem = (id, userKey, type, content, conf, status = 'active') => ({
