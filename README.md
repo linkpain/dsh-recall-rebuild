@@ -36,6 +36,7 @@
 - **与生态共存不错位**:注入消息 `source.kind='plugin:recall-rebuild'`,不会被 prime-memory 当作新用户消息再次捕获/蒸馏;`replace` 策略原位替换对方的原文召回,`append` 策略追加,不重复注入;
 - **永不阻塞对话**:无记忆库/无模型路由/超时/重建失败,一律静默跳过本轮;
 - **重建质量可观测**:每轮在 `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` 写一条 JSONL 审计日志,「原始检索碎片 ↔ 重建后片段」同屏对比 + 注入方式/耗时/跳过原因,附带 `stats.json` 统计——零额外注入、零 token 成本,自己判断重建效果;
+- **睡眠巩固 + 联想扩散(长期记忆子系统)**:空闲时把累积的碎片「聚类 → LLM 抽象为稳定记忆 → 联想图扩散 → 低频遗忘降权」,巩固层条目在召回时优先注入、命中越用越稳、强关联主题顺带想起——更接近人脑的「夜间回放迁移到新皮层」;产出只存本插件目录,底层记忆库保持只读;
 - **零部署硬件成本**:不买显卡、不租 GPU,重建调用走宿主已有的 LLM 路由,每轮只消耗百级 token;
 - **零额外运行时依赖**:用 Node 22+ 内置 `node:sqlite` 读库,安装即用。
 
@@ -82,6 +83,9 @@ flowchart LR
     P --> Q["构造召回查询<br/>(会话末尾消息)"]
     Q --> S[("记忆库<br/>prime(SQLite)/ dsh-memory(JSON)/ palace(Markdown)")]
     S --> F["用户命名空间过滤<br/>(auto/strict/off)"]
+    S -. "碎片累积(pending)" .-> C["睡眠巩固(空闲异步)<br/>聚类 → LLM 抽象 → 联想 → 遗忘"]
+    C --> C2[("巩固层<br/>~/.dsh/recall-rebuild/consolidated")]
+    C2 -. "active 条目 + 联想扩散" .-> F
     F --> R["LLM 重建式回忆<br/>(碎片 → 带语境的回忆片段)"]
     R --> I["注入回忆片段<br/>source.kind = plugin:recall-rebuild"]
     F --> N[("归属索引<br/>~/.dsh/recall-rebuild/namespaces")]
@@ -92,7 +96,7 @@ flowchart LR
     R -. "失败/超时 → 静默跳过" .-> M
 ```
 
-一句话流程:**提取用户 → 检索 → 用户隔离过滤 → 重建 → 注入**,而不是**检索 → 注入**。
+一句话流程:**提取用户 → 检索 → 用户隔离过滤 → 合并巩固层 → 重建 → 注入**,而不是**检索 → 注入**;碎片在空闲时「睡眠巩固」沉淀为稳定记忆,下次召回优先想起。
 
 ## 与现有插件的错开与共存
 
@@ -126,6 +130,37 @@ flowchart LR
 | `observability.logDir` | `''` | 日志目录;空 = `<DSH_HOME>/recall-rebuild/logs` |
 | `observability.includeFragments` | `true` | 日志是否记录原始检索碎片(与重建片段同屏对比);`false` 只记重建结果 |
 | `observability.statsEnabled` | `true` | 是否写统计文件 `stats.json`(30s 节流) |
+| `consolidate.enabled` | `true` | 睡眠巩固总开关 |
+| `consolidate.dir` | `''` | 巩固层目录;空 = `<DSH_HOME>/recall-rebuild/consolidated` |
+| `consolidate.minFragments` | `20` | 待巩固碎片累积多少条触发一次巩固 |
+| `consolidate.minIntervalMs` | `21600000` | 距上次巩固最短间隔(6h) |
+| `consolidate.checkIntervalMs` | `3600000` | 定时检查间隔(1h) |
+| `consolidate.maxFragmentsPerRun` | `50` | 单次巩固最多处理碎片数 |
+| `consolidate.clusterThreshold` | `0.25` | 聚类相似度阈值(同主题碎片 ≥ 阈值归为一簇) |
+| `consolidate.maxCluster` | `8` | 单簇最多碎片数 |
+| `consolidate.maxOutputChars` | `400` | 单条巩固输出字符上限 |
+| `consolidate.temperature` | `0.4` | 巩固调用温度(低于重建,求稳) |
+| `consolidate.maxTokens` | `1024` | 巩固调用输出 token 上限 |
+| `consolidate.timeoutMs` | `20000` | 单簇巩固超时(离线任务可放宽) |
+| `consolidate.confidenceThreshold` | `0.4` | 遗忘阈值:置信度低于它且长期未命中 → dormant(召回降权) |
+| `consolidate.dormantDays` | `30` | 多少天未命中(且低置信)进入 dormant |
+
+## 长期记忆子系统:睡眠巩固与联想扩散
+
+类比人脑:**底层记忆插件 = 海马体**(即时捕获碎片),**本插件的巩固层 = 新皮层**(把碎片沉淀为稳定记忆)。这层只存在本插件自己的目录(`~/.dsh/recall-rebuild/consolidated/`),底层记忆库始终保持只读。
+
+**一次巩固(空闲异步,不阻塞对话)做什么**:
+
+1. **累积**:每轮检索命中的碎片进入 `pending.json`(去重、限量);
+2. **聚类**:纯本地按 2-gram 相似度把同主题碎片分簇(无需 LLM、零成本);
+3. **LLM 抽象**:每簇交给宿主 LLM,提炼为 1-3 条稳定的长期记忆(`stable-fact / pattern / preference / relationship / mood`),忽略一次性噪音;
+4. **联想扩散**:本轮产出的条目两两建立关联边(`links.json` 权重累加)——召回命中一条时,强关联主题顺带想起;
+5. **遗忘(只读侧)**:低置信 + 30 天未命中的条目进入 `dormant`(召回降权,不删除、不写底层库);
+6. **越用越稳**:每次命中 `touchCount+1`,高置信条目优先注入。
+
+触发:启动后空闲 10s 查一次,之后每 `checkIntervalMs` 查一次;pending 达标且距上次巩固超 `minIntervalMs` 才真正执行;失败保留 pending 下次再试。
+
+**加固了这一层的定位**:它不替代底层记忆插件,也不重复存储——底层负责「记住」,巩固层负责「把记住的东西变成稳定的自己」。
 
 ## 观测:怎么判断重建是否真的更好
 
@@ -143,7 +178,8 @@ flowchart LR
 - [ ] 更多记忆源 adapter(`dsh-memory-vault`、`dsh-auto-memory`、`dsh-memory-gate` 等变体);
 - [x] IM 用户级命名空间隔离(跨 QQ/微信的同一人记忆共享)—— v0.1.3 已实现;
 - [x] 重建质量可观测(每轮 JSONL 日志 + stats)—— v0.1.4 已实现;
-- [ ] 睡眠巩固 / 联想扩散(更接近人脑的长期记忆子系统的后续阶段)。
+- [x] 睡眠巩固 / 联想扩散(长期记忆子系统:聚类 → LLM 抽象 → 联想 → 遗忘)—— v0.1.5 已实现;
+- [ ] 巩固层条目编辑/手动触发、更多记忆源 adapter(欢迎提 issue)。
 
 ## 局限(如实声明)
 
@@ -151,9 +187,10 @@ flowchart LR
 2. **用户隔离是观察式启发式,非底层强隔离**:底层记忆库(prime 等)没有 IM 用户字段,本插件靠「谁在会话中命中过这条记忆,它就归谁」建立归属。因此:`auto` 模式防得住「已明确归属他人」的记忆,防不住「从未被命中过的无主记忆」(它们默认可见,命中后归位);`strict` 模式从零记忆起步,聊过的话题才开始归位。需要强隐私隔离且不介意冷启动时用 `strict`。
 3. **用户识别依赖桥接插件约定**:优先解析 `<dsh_im_source>` JSON(senderId/chatId/threadId/botId),兜底常见字段(senderId/userId/openid/fromUser);不同桥接字段不同时用 `user.sourceTagPattern` 覆盖。识别不到用户(桌面会话)时不做隔离。
 4. **幻觉受控但非零**:重建 prompt 明确禁止编造碎片外事实,但 LLM 仍有漂移概率;注入标注记忆依据 id 便于审计。需要强事实的场景可关掉重建(`rebuild.enabled=false`)。
-5. **token 消耗**:每轮召回命中即产生一次重建调用(通常百级 token),由宿主模型路由计费。
+5. **token 消耗**:每轮召回命中即产生一次重建调用(通常百级 token),由宿主模型路由计费;巩固只在空闲且碎片达标时发生,每次几十~几百 token。
 6. **日志零成本但非自动诊断**:日志只记录事实(碎片/重建/耗时/跳过原因),不做好坏判定;用户可对比判断,或切换 `inject.strategy=append` 运行时对比。
-7. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
+7. **巩固层是启发式蒸馏,非底层改写**:聚类基于 2-gram 相似度(可能把近义不同词的两条碎片分到不同簇);LLM 抽象有轻幻觉风险(已在 prompt 禁止编造);dormant 只是召回降权,不会删底层库、也不会在本插件内物理删除。
+8. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
 
 ## 开发与验证
 
@@ -161,7 +198,7 @@ flowchart LR
 npm install
 npm run typecheck   # tsc --noEmit
 npm run build       # 编译到 dist/
-node scripts/verify.mjs   # 运行时验证:导出/Config/prime FTS+LIKE/palace Markdown/dsh-memory JSON/用户隔离/可观测
+node scripts/verify.mjs   # 运行时验证:导出/Config/prime FTS+LIKE/palace Markdown/dsh-memory JSON/降级
 npm pack --dry-run  # 检查发布包内容
 ```
 
@@ -183,6 +220,7 @@ This plugin upgrades the **recall/presentation layer**:
 - Injects via `agent/pre-step` with `source.kind='plugin:recall-rebuild'`, so it is never re-captured by the underlying memory plugin; `replace` strategy swaps out the other plugin's raw-text recall in place, `append` adds alongside;
 - **Never blocks a conversation**: missing store, missing model route, timeout or rebuild failure all silently skip the step;
 - **Observable rebuild quality**: every round appends one JSONL audit line to `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` — raw fragments vs rebuilt snippet side by side, injection mode / latency / skip reason, plus a throttled `stats.json` — zero extra injection, zero token cost, so you can judge for yourself whether rebuilding beats raw recall;
+- **Sleep consolidation + associative spreading (long-term memory layer)**: while idle, accumulated fragments are clustered (local 2-gram similarity), LLM-distilled into stable memories (`stable-fact`/`pattern`/`preference`/`relationship`/`mood`), linked in a spreading-activation graph, and low-confidence long-unused entries decay to `dormant` (recall down-weighting, never deleted, never written to the base store). Consolidated entries are recalled first, get more stable the more they are hit, and strong links make related topics surface too — closer to how the brain consolidates daytime experience overnight. Everything lives under `<DSH_HOME>/recall-rebuild/consolidated/`;
 - **Zero infra cost**: no GPU/VM — rebuild calls go through the host's existing LLM routing, ~hundreds of tokens per hit; uses only Node's built-in `node:sqlite`.
 
 **Who it's for**: DSH desktop-pet / virtual-character / companion users who want the bot to "remember like a person" rather than "quote a file", including characters bridged to QQ/WeChat.
