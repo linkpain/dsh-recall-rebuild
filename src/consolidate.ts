@@ -75,9 +75,23 @@ async function consolidateText(
   return text;
 }
 
+/** 一次巩固的执行结果(供调度与命令输出)。 */
+export interface ConsolidationResult {
+  /** 是否产生了新的巩固条目。 */
+  produced: boolean;
+  /** 本次处理的簇数。 */
+  clusters: number;
+  /** 产出的新条目数。 */
+  entries: number;
+  /** 进入 dormant 的条目数。 */
+  decayed: number;
+  /** 处理前的 pending 碎片数。 */
+  pending: number;
+}
+
 /**
- * 执行一次巩固。返回是否产生了新的巩固条目。
- * 任何失败都不抛错:无路由/超时/解析失败 → 保留 pending,由调用方继续调度。
+ * 执行一次巩固。返回执行结果;任何失败都不抛错:
+ * 无路由/超时/解析失败 → 保留 pending,由调用方继续调度。
  */
 export async function runConsolidation(
   ctx: Context,
@@ -85,15 +99,19 @@ export async function runConsolidation(
   consolidated: ConsolidatedStore,
   opts: ConsolidateOptions,
   logger: LoggerLike,
-): Promise<boolean> {
-  if (!opts.enabled) return false;
+): Promise<ConsolidationResult> {
+  if (!opts.enabled) {
+    return { produced: false, clusters: 0, entries: 0, decayed: 0, pending: 0 };
+  }
   const now = Date.now();
   const pending = consolidated.pending();
-  if (pending.length === 0) return false;
+  if (pending.length === 0) {
+    return { produced: false, clusters: 0, entries: 0, decayed: 0, pending: 0 };
+  }
   const route = resolveModelRoute(ctx);
   if (!route) {
     logger.debug?.('[recall-rebuild] 巩固:未解析到默认模型路由,保留 pending 下次再试');
-    return false;
+    return { produced: false, clusters: 0, entries: 0, decayed: 0, pending: pending.length };
   }
   const items = pending.slice(-opts.maxFragmentsPerRun);
   const clusters = clusterize(
@@ -168,5 +186,11 @@ export async function runConsolidation(
   logger.info(
     `[recall-rebuild] 睡眠巩固完成: 簇 ${clusters.length}, 产出 ${producedIds.length} 条, 遗忘 ${decayed} 条`,
   );
-  return produced;
+  return {
+    produced,
+    clusters: clusters.length,
+    entries: producedIds.length,
+    decayed,
+    pending: pending.length,
+  };
 }

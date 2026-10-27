@@ -73,6 +73,14 @@ export interface ObservabilityOptions {
   statsEnabled: boolean;
 }
 
+/** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
+export interface CommandsOptions {
+  /** 命令总开关;false = 不注册任何命令。 */
+  enabled: boolean;
+  /** 注册的命令名(不含前导 /);与其它插件冲突时改名。 */
+  name: string;
+}
+
 /** 睡眠巩固(长期记忆子系统)选项。 */
 export interface ConsolidateOptions {
   /** 巩固总开关。 */
@@ -124,6 +132,7 @@ export interface RecallRebuildConfig {
   user: UserIsolationOptions;
   observability: ObservabilityOptions;
   consolidate: ConsolidateOptions;
+  commands: CommandsOptions;
 }
 
 export const recallRebuildSchema = Schema.object({
@@ -175,5 +184,9 @@ export const recallRebuildSchema = Schema.object({
     timeoutMs: Schema.number().min(1000).max(120000).default(20000),
     confidenceThreshold: Schema.number().min(0.1).max(0.9).default(0.4),
     dormantDays: Schema.number().min(3).max(365).default(30),
+  }).default({}),
+  commands: Schema.object({
+    enabled: Schema.boolean().default(true),
+    name: Schema.string().default('recall-rebuild'),
   }).default({}),
 }).default({});

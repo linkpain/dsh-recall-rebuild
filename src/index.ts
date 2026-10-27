@@ -17,9 +17,10 @@ import { NamespaceStore } from './namespace.js';
 import { RebuildLogger } from './observability.js';
 import { ConsolidatedStore } from './consolidated.js';
 import { runConsolidation } from './consolidate.js';
+import { registerRecallRebuildCommands } from './commands.js';
 
 export const name = 'recall-rebuild';
-export const inject = ['llm'];
+export const inject = ['llm', 'commands?'];
 export const Config = recallRebuildSchema;
 
 function resolveDataDir(config: RecallRebuildConfig, logger: LoggerLike): string {
@@ -125,6 +126,9 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
   }
 
   registerRecallRebuild(ctx, store, config, logger, namespaces, obsLog, consolidated);
+
+  // 巩固层交互命令(可选依赖:宿主无 commands 服务时静默跳过,不影响插件主体)
+  registerRecallRebuildCommands(ctx, store, consolidated, config, logger);
 
   // 睡眠巩固调度:启动后空闲 10s 查一次,之后按 checkIntervalMs 定时查;
   // 触发条件由 shouldRun 判定(pending 达标 + 距上次巩固超间隔),真正执行时

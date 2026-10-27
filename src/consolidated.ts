@@ -213,6 +213,20 @@ export class ConsolidatedStore {
     this.writeJson(this.files.memories, [...this.memories.values()]);
   }
 
+  /** 用户主动删除:物理移除条目及全部联想边(与被动遗忘不同,这是显式操作)。 */
+  remove(id: string): boolean {
+    if (!this.memories.has(id)) return false;
+    this.memories.delete(id);
+    delete this.links[id];
+    for (const k of Object.keys(this.links)) {
+      delete this.links[k]?.[id];
+      if (Object.keys(this.links[k] ?? {}).length === 0) delete this.links[k];
+    }
+    this.writeJson(this.files.memories, [...this.memories.values()]);
+    this.writeJson(this.files.links, this.links);
+    return true;
+  }
+
   /** 联想扩散:给一对条目加关联边(weight 累加)。 */
   addLink(a: string, b: string, label: string): void {
     if (a === b) return;
