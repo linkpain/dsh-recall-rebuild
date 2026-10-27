@@ -37,6 +37,7 @@ check('Config 覆盖生效', plugin.Config({ inject: { strategy: 'append' } }).i
 check('Config source 支持 dsh-memory', plugin.Config({ source: 'dsh-memory' }).source === 'dsh-memory');
 check('Config user.isolation 默认 auto', cfg.user.isolation === 'auto' && cfg.user.isolationDir === '');
 check('Config user.isolation 覆盖生效', plugin.Config({ user: { isolation: 'strict' } }).user.isolation === 'strict');
+check('Config observability 默认开启', cfg.observability.logEnabled === true && cfg.observability.includeFragments === true);
 
 // ── 2. store 适配器真实检索 ──────────────────────────────────
 console.log('[2] store 适配器(临时 SQLite 库)');
@@ -250,6 +251,58 @@ ns.recordHits('im:qq:u_alice', [mk('memA', 'x')]);
 const aliceAgain = JSON.parse(fs.readFileSync(path.join(nsDir, 'im_qq_u_alice.json'), 'utf8'));
 check('重复记录幂等', Object.keys(aliceAgain.memoryIds).length === Object.keys(aliceAfter.memoryIds).length);
 fs.rmSync(nsDir, { recursive: true, force: true });
+
+// ── 2e. 重建质量可观测 ───────────────────────────────────────
+console.log('[2e] 重建质量可观测');
+const { RebuildLogger, fragmentSample } = await import(`${distUrl}observability.js`);
+const obsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-obs-'));
+const obs = new RebuildLogger({ logDir: obsDir, enabled: true, includeFragments: true, logger });
+obs.log({
+  userKey: 'im:qq:u_alice',
+  isolation: 'auto',
+  query: '我最近心情不太好',
+  hitCount: 2,
+  memoryIds: ['r1', 'r2'],
+  fragments: ['用户喜欢喝冰美式咖啡', '用户养了一只叫煤球的猫'],
+  rebuilt: '记得你养了只叫煤球的黑猫,平时它一蹭你你就笑。今天是不顺心了吗?',
+  injection: 'replaced',
+  latencyMs: 850,
+});
+obs.log({
+  userKey: null,
+  isolation: 'auto',
+  query: '明天天气怎么样',
+  hitCount: 0,
+  memoryIds: [],
+  rebuilt: '',
+  injection: 'none',
+  latencyMs: 12,
+});
+const obsFiles = fs.readdirSync(obsDir).filter((n) => n.endsWith('.log'));
+check('obs:日志文件按天命名', obsFiles.length === 1 && /^recall-\d{4}-\d{2}-\d{2}\.log$/.test(obsFiles[0]), obsFiles.join(','));
+const obsLines = fs.readFileSync(path.join(obsDir, obsFiles[0]), 'utf8').trim().split('\n');
+check('obs:每轮一行 JSONL', obsLines.length === 2);
+const firstEntry = JSON.parse(obsLines[0]);
+check('obs:记录 userKey/query/hitCount', firstEntry.userKey === 'im:qq:u_alice' && firstEntry.hitCount === 2 && firstEntry.query.includes('心情'));
+check('obs:碎片↔重建同屏(含原始碎片)', Array.isArray(firstEntry.fragments) && firstEntry.fragments[0].includes('冰美式') && firstEntry.rebuilt.includes('煤球'));
+check('obs:记录注入方式与耗时', firstEntry.injection === 'replaced' && typeof firstEntry.latencyMs === 'number');
+const secondEntry = JSON.parse(obsLines[1]);
+check('obs:零命中轮次也有记录', secondEntry.hitCount === 0 && secondEntry.injection === 'none');
+check('obs:fragmentSample 对比段可读', fragmentSample(firstEntry).original[0].includes('冰美式') && fragmentSample(firstEntry).rebuilt.includes('黑猫'));
+// 关闭 fragments 的日志器
+const obsNoFrag = new RebuildLogger({ logDir: obsDir, enabled: true, includeFragments: false, logger });
+obsNoFrag.log({
+  userKey: null, isolation: 'off', query: 'q', hitCount: 1, memoryIds: ['x'],
+  fragments: ['不应出现在日志中'], rebuilt: '重建结果', injection: 'appended', latencyMs: 5,
+});
+const noFragLine = JSON.parse(fs.readFileSync(path.join(obsDir, obsFiles[0]), 'utf8').trim().split('\n').at(-1));
+check('obs:includeFragments=false 省略碎片', noFragLine.fragments.length === 0 && noFragLine.rebuilt === '重建结果');
+obs.flushStats();
+const stats = JSON.parse(fs.readFileSync(path.join(obsDir, 'stats.json'), 'utf8'));
+check('obs:统计累积正确', stats.rounds === 2 && stats.hits === 1 && stats.rebuilt === 1 && stats.injected === 1 && stats.replaced === 1);
+const noFragStats = obsNoFrag.snapshot();
+check('obs:snapshot 独立计数', noFragStats.rounds === 1);
+fs.rmSync(obsDir, { recursive: true, force: true });
 
 // ── 3. 重建引擎纯逻辑(不实际调用 LLM) ───────────────────────
 console.log('[3] rebuild 碎片组装预算');
