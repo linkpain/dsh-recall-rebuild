@@ -30,6 +30,7 @@
 ## 特性
 
 - **只读增强,零污染**:以 `readOnly` 打开现有记忆库(`$DSH_HOME/memory/memory.db`),不重写捕获管线、不写任何数据,装/卸都不影响原插件;
+- **多记忆源可插拔**:`source` 支持 dsh-prime-memory(SQLite FTS5)与 dsh-memory-palace(Markdown 文件)两种底层记忆,`auto` 自动探测,后续可继续扩展;
 - **生成式重建**:在 `agent/pre-step` 用会话末尾消息召回碎片,LLM 重建为带语境/情绪/时间感的回忆片段,替代生硬原文注入;
 - **与生态共存不错位**:注入消息 `source.kind='plugin:recall-rebuild'`,不会被 prime-memory 当作新用户消息再次捕获/蒸馏;`replace` 策略原位替换对方的原文召回,`append` 策略追加,不重复注入;
 - **永不阻塞对话**:无记忆库/无模型路由/超时/重建失败,一律静默跳过本轮;
@@ -48,7 +49,7 @@
 
 - DeepSeek Harness `0.1.0-rc.2 … 0.2.1-rc.3`;
 - Node ≥ 22.5(需要内置 `node:sqlite`);
-- 已安装并运行过 `dsh-prime-memory`(0.26.x),且记忆库已生成。
+- 已安装并运行过 `dsh-prime-memory`(0.26.x,SQLite 记忆库)**或** `dsh-memory-palace`(Markdown 记忆文件),且已有记忆数据。
 
 ```bash
 dsh plugin --profile <你的配置文件名> add dsh-recall-rebuild
@@ -76,7 +77,7 @@ dsh plugin --profile <你的配置文件名> add dsh-recall-rebuild
 flowchart LR
     U["用户新消息"] --> P["agent/pre-step<br/>(本插件 prepend)"]
     P --> Q["构造召回查询<br/>(会话末尾消息)"]
-    Q --> S[("prime-memory 记忆库<br/>只读 · l1_fts BM25 + LIKE 兜底")]
+    Q --> S[("记忆库<br/>prime(SQLite FTS5)/ palace(Markdown)")]
     S --> R["LLM 重建式回忆<br/>(碎片 → 带语境的回忆片段)"]
     R --> I["注入回忆片段<br/>source.kind = plugin:recall-rebuild"]
     P --> M["模型推理"]
@@ -98,7 +99,7 @@ flowchart LR
 | --- | --- | --- |
 | `enabled` | `true` | 总开关 |
 | `dataDir` | `''` | 记忆库目录;空 = `$DSH_HOME/memory` |
-| `source` | `auto` | 记忆来源(当前支持 `auto`/`prime`,均指向 prime-memory 库) |
+| `source` | `auto` | 记忆来源:`auto` 自动探测(prime → palace);`prime` = dsh-prime-memory SQLite 库;`palace` = dsh-memory-palace Markdown 文件 |
 | `rebuild.enabled` | `true` | 重建式回忆开关;`false` 退化为原文检索注入 |
 | `rebuild.maxResults` | `5` | 每轮检索条数 |
 | `rebuild.maxMemoryChars` | `400` | 单条记忆进重建 prompt 的字符上限 |
@@ -115,7 +116,7 @@ flowchart LR
 
 ## Roadmap
 
-- [ ] 适配更多记忆库来源(`dsh-mneme` 等),做成可插拔 adapter;
+- [ ] 更多记忆源 adapter(`@max-null/dsh-memory`、`dsh-memory-gate` 等 SQLite/文件变体);
 - [ ] IM 用户级命名空间隔离(跨 QQ/微信的同一人记忆共享);
 - [ ] 重建质量可观测:注入效果对比开关 + 每轮重建日志;
 - [ ] 睡眠巩固 / 联想扩散(更接近人脑的长期记忆子系统的后续阶段)。
@@ -133,7 +134,7 @@ flowchart LR
 npm install
 npm run typecheck   # tsc --noEmit
 npm run build       # 编译到 dist/
-node scripts/verify.mjs   # 运行时验证:导出/Config/只读 FTS 检索/LIKE 兜底/降级
+node scripts/verify.mjs   # 运行时验证:导出/Config/prime FTS+LIKE/palace Markdown/降级
 npm pack --dry-run  # 检查发布包内容
 ```
 
@@ -145,7 +146,7 @@ MIT
 
 ## English Overview
 
-**dsh-recall-rebuild** is an *enhancer* for memory plugins in [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (DSH). Existing memory plugins such as `dsh-prime-memory` already handle *storage* very well — cross-session capture, distillation and persistence are mature, so install them first. This plugin does **not** duplicate that work; it enhances a single layer: **how memories are recalled** — instead of injecting raw snippets as-is, it has the LLM reconstruct them into contextual recollections, so "remembering" feels natural rather than like quoting a file.
+**dsh-recall-rebuild** is an *enhancer* for memory plugins in [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (DSH). Existing memory plugins such as `dsh-prime-memory` (SQLite) or `dsh-memory-palace` (Markdown) already handle *storage* very well — cross-session capture, distillation and persistence are mature, so install one first. This plugin does **not** duplicate that work; it enhances a single layer: **how memories are recalled** — instead of injecting raw snippets as-is, it has the LLM reconstruct them into contextual recollections, so "remembering" feels natural rather than like quoting a file.
 
 This plugin upgrades the **recall/presentation layer**:
 
