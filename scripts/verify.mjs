@@ -39,6 +39,7 @@ check('Config user.isolation 默认 auto', cfg.user.isolation === 'auto' && cfg.
 check('Config user.isolation 覆盖生效', plugin.Config({ user: { isolation: 'strict' } }).user.isolation === 'strict');
 check('Config observability 默认开启', cfg.observability.logEnabled === true && cfg.observability.includeFragments === true);
 check('Config consolidate 默认开启', cfg.consolidate.enabled === true && cfg.consolidate.minFragments === 20);
+check('Config commands 默认开启', cfg.commands.enabled === true && cfg.commands.name === 'recall-rebuild');
 
 // ── 2. store 适配器真实检索 ──────────────────────────────────
 console.log('[2] store 适配器(临时 SQLite 库)');
@@ -371,6 +372,51 @@ cs.markRun(nowMs);
 check('cons:markRun 记录运行', cs.metaInfo().runCount === 1);
 fs.rmSync(cluDir, { recursive: true, force: true });
 fs.rmSync(csDir, { recursive: true, force: true });
+
+// ── 2g. 巩固层交互命令 ─────────────────────────────────────────
+console.log('[2g] 巩固层交互命令');
+const { parseCommandLine, visibleMemories, formatMemoryList } = await import(`${distUrl}commands.js`);
+check('cmd:空输入 → help', parseCommandLine('').sub === 'help');
+check('cmd:list 解析', parseCommandLine('list').sub === 'list' && parseCommandLine('list').args.length === 0);
+check('cmd:list --all 标记', parseCommandLine('list --all').all === true);
+check('cmd:edit 拆出 id 与内容', parseCommandLine('edit c_1 用户喜欢冰美式').args.join('|') === 'c_1|用户喜欢冰美式');
+check('cmd:未知子命令', parseCommandLine('foo bar').sub === 'unknown');
+check('cmd:大小写不敏感', parseCommandLine('LIST').sub === 'list');
+
+const cmdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-cmd-'));
+const cstore = new ConsolidatedStore(cmdDir, logger);
+const cstore = new ConsolidatedStore(cmdDir, logger);
+cstore.load();
+const nowC = Date.now();
+const mkMem = (id, userKey, type, content, conf, status = 'active') => ({
+  id, userKey, type, content, sourceIds: ['r1'], confidence: conf, status,
+  createdAt: nowC, updatedAt: nowC, touchCount: 1,
+});
+cstore.upsert(mkMem('a1', 'im:qq:u_alice', 'preference', '用户喜欢冰美式咖啡', 0.8));
+cstore.upsert(mkMem('a2', 'im:qq:u_alice', 'stable-fact', '用户养了一只煤球猫', 0.6));
+cstore.upsert(mkMem('b1', 'im:qq:u_bob', 'stable-fact', '用户打游戏到很晚', 0.7));
+cstore.upsert(mkMem('s1', null, 'mood', '共享群聊情绪', 0.5));
+cstore.upsert(mkMem('d1', null, 'stable-fact', '旧记忆', 0.2, 'dormant'));
+check('cmd:off 模式全部可见', visibleMemories(cstore, 'im:qq:u_alice', 'off', false).length === 5);
+check('cmd:auto 只见自己+共享',
+  visibleMemories(cstore, 'im:qq:u_alice', 'auto', false).map((m) => m.id).sort().join(',') === 'a1,a2,d1,s1');
+check('cmd:strict 同 auto 管理视图',
+  visibleMemories(cstore, 'im:qq:u_bob', 'strict', false).map((m) => m.id).sort().join(',') === 'b1,d1,s1');
+check('cmd:桌面 null 全部可见', visibleMemories(cstore, null, 'strict', false).length === 5);
+check('cmd:--all 忽略隔离', visibleMemories(cstore, 'im:qq:u_alice', 'strict', true).length === 5);
+const listText = formatMemoryList(visibleMemories(cstore, 'im:qq:u_alice', 'auto', false), {
+  userKey: 'im:qq:u_alice', all: false, now: nowC,
+});
+check('cmd:list 输出含 id/类型/置信', listText.includes('a1') && listText.includes('偏好') && listText.includes('80%'));
+check('cmd:list dormant 标记', listText.includes('dormant'));
+check('cmd:list 隔离提示', listText.includes('隔离视图'));
+check('cmd:remove 删除条目', cstore.remove('a1') === true && cstore.get('a1') === undefined);
+cstore.addLink('a2', 'b1', '同轮巩固');
+cstore.addLink('b1', 'a2', '同轮巩固');
+check('cmd:remove 清联想边',
+  cstore.remove('a2') === true && cstore.strongLinks('b1', 1, 5).length === 0 && cstore.strongLinks('a2', 1, 5).length === 0);
+check('cmd:remove 不存在返回 false', cstore.remove('nope') === false);
+fs.rmSync(cmdDir, { recursive: true, force: true });
 
 // ── 3. 重建引擎纯逻辑(不实际调用 LLM) ───────────────────────
 console.log('[3] rebuild 碎片组装预算');
