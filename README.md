@@ -37,6 +37,7 @@
 - **永不阻塞对话**:无记忆库/无模型路由/超时/重建失败,一律静默跳过本轮;
 - **重建质量可观测**:每轮在 `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` 写一条 JSONL 审计日志,「原始检索碎片 ↔ 重建后片段」同屏对比 + 注入方式/耗时/跳过原因,附带 `stats.json` 统计——零额外注入、零 token 成本,自己判断重建效果;
 - **睡眠巩固 + 联想扩散(长期记忆子系统)**:空闲时把累积的碎片「聚类 → LLM 抽象为稳定记忆 → 联想图扩散 → 低频遗忘降权」,巩固层条目在召回时优先注入、命中越用越稳、强关联主题顺带想起——更接近人脑的「夜间回放迁移到新皮层」;产出只存本插件目录,底层记忆库保持只读;
+- **巩固层交互命令**:`/recall-rebuild list | now | edit <id> <内容> | forget <id>`——像管理自己的记忆一样查看长期记忆、立即触发一次巩固、修正记错的、主动忘掉不想留的(操作遵循同一套用户隔离视图);
 - **零部署硬件成本**:不买显卡、不租 GPU,重建调用走宿主已有的 LLM 路由,每轮只消耗百级 token;
 - **零额外运行时依赖**:用 Node 22+ 内置 `node:sqlite` 读库,安装即用。
 
@@ -144,6 +145,8 @@ flowchart LR
 | `consolidate.timeoutMs` | `20000` | 单簇巩固超时(离线任务可放宽) |
 | `consolidate.confidenceThreshold` | `0.4` | 遗忘阈值:置信度低于它且长期未命中 → dormant(召回降权) |
 | `consolidate.dormantDays` | `30` | 多少天未命中(且低置信)进入 dormant |
+| `commands.enabled` | `true` | 巩固层交互命令总开关 |
+| `commands.name` | `recall-rebuild` | 注册的命令名(不含前导 `/`);与其它插件冲突时改名 |
 
 ## 长期记忆子系统:睡眠巩固与联想扩散
 
@@ -162,6 +165,20 @@ flowchart LR
 
 **加固了这一层的定位**:它不替代底层记忆插件,也不重复存储——底层负责「记住」,巩固层负责「把记住的东西变成稳定的自己」。
 
+## 管理长期记忆(命令)
+
+像管理自己的记忆一样管理巩固层(命令在支持 `/` 命令的 DSH 界面输入;宿主没有命令服务时自动跳过,不影响插件主体):
+
+| 命令 | 作用 |
+| --- | --- |
+| `/recall-rebuild list [--all]` | 查看长期记忆:类型 / 置信度 / 命中次数 / 更新时间;dormant(已降权)单独标出。默认只显示当前用户的记忆 + 共享记忆,`--all` 查看全部(含其它 IM 用户) |
+| `/recall-rebuild now` | 立即触发一次睡眠巩固(绕过最短间隔;pending 为空时提示) |
+| `/recall-rebuild edit <id> <新内容>` | 修正一条记忆的内容(人也会记错、改口) |
+| `/recall-rebuild forget <id>` | 主动删除一条记忆及其联想边(与被动遗忘不同,这是显式操作,不写底层库) |
+| `/recall-rebuild help` | 显示用法 |
+
+命令的可见范围与召回隔离是同一套规则:当前会话能识别 IM 用户时,只能查看/修改「该用户 + 无主共享」的记忆;桌面会话(识别不到用户)或 `--all` 时不受限。命令名冲突时用 `commands.name` 改名。
+
 ## 观测:怎么判断重建是否真的更好
 
 每轮运行后,打开日志目录(`~/.dsh/recall-rebuild/logs/`):
@@ -179,6 +196,7 @@ flowchart LR
 - [x] IM 用户级命名空间隔离(跨 QQ/微信的同一人记忆共享)—— v0.1.3 已实现;
 - [x] 重建质量可观测(每轮 JSONL 日志 + stats)—— v0.1.4 已实现;
 - [x] 睡眠巩固 / 联想扩散(长期记忆子系统:聚类 → LLM 抽象 → 联想 → 遗忘)—— v0.1.5 已实现;
+- [x] 巩固层交互命令(list / now / edit / forget,管理长期记忆)—— v0.1.6 已实现;
 - [ ] 巩固层条目编辑/手动触发、更多记忆源 adapter(欢迎提 issue)。
 
 ## 局限(如实声明)
@@ -191,6 +209,7 @@ flowchart LR
 6. **日志零成本但非自动诊断**:日志只记录事实(碎片/重建/耗时/跳过原因),不做好坏判定;用户可对比判断,或切换 `inject.strategy=append` 运行时对比。
 7. **巩固层是启发式蒸馏,非底层改写**:聚类基于 2-gram 相似度(可能把近义不同词的两条碎片分到不同簇);LLM 抽象有轻幻觉风险(已在 prompt 禁止编造);dormant 只是召回降权,不会删底层库、也不会在本插件内物理删除。
 8. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
+9. **交互命令依赖宿主命令服务**:支持 `/` 命令的界面(桌面/Web UI)都有;无命令服务的组合(如 headless)下命令静默不注册,插件其余功能不受影响。
 
 ## 开发与验证
 
@@ -221,6 +240,7 @@ This plugin upgrades the **recall/presentation layer**:
 - **Never blocks a conversation**: missing store, missing model route, timeout or rebuild failure all silently skip the step;
 - **Observable rebuild quality**: every round appends one JSONL audit line to `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` — raw fragments vs rebuilt snippet side by side, injection mode / latency / skip reason, plus a throttled `stats.json` — zero extra injection, zero token cost, so you can judge for yourself whether rebuilding beats raw recall;
 - **Sleep consolidation + associative spreading (long-term memory layer)**: while idle, accumulated fragments are clustered (local 2-gram similarity), LLM-distilled into stable memories (`stable-fact`/`pattern`/`preference`/`relationship`/`mood`), linked in a spreading-activation graph, and low-confidence long-unused entries decay to `dormant` (recall down-weighting, never deleted, never written to the base store). Consolidated entries are recalled first, get more stable the more they are hit, and strong links make related topics surface too — closer to how the brain consolidates daytime experience overnight. Everything lives under `<DSH_HOME>/recall-rebuild/consolidated/`;
+- **Manage your long-term memories with slash commands**: `/recall-rebuild list [--all]` (view consolidated memories with type/confidence/hit count), `now` (trigger a consolidation immediately), `edit <id> <text>` (fix a misremembered entry) and `forget <id>` (explicitly delete an entry and its links). The command view follows the same per-user isolation rules; it silently skips registration when the host has no command service;
 - **Zero infra cost**: no GPU/VM — rebuild calls go through the host's existing LLM routing, ~hundreds of tokens per hit; uses only Node's built-in `node:sqlite`.
 
 **Who it's for**: DSH desktop-pet / virtual-character / companion users who want the bot to "remember like a person" rather than "quote a file", including characters bridged to QQ/WeChat.
