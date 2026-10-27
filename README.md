@@ -35,6 +35,7 @@
 - **生成式重建**:在 `agent/pre-step` 用会话末尾消息召回碎片,LLM 重建为带语境/情绪/时间感的回忆片段,替代生硬原文注入;
 - **与生态共存不错位**:注入消息 `source.kind='plugin:recall-rebuild'`,不会被 prime-memory 当作新用户消息再次捕获/蒸馏;`replace` 策略原位替换对方的原文召回,`append` 策略追加,不重复注入;
 - **永不阻塞对话**:无记忆库/无模型路由/超时/重建失败,一律静默跳过本轮;
+- **重建质量可观测**:每轮在 `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` 写一条 JSONL 审计日志,「原始检索碎片 ↔ 重建后片段」同屏对比 + 注入方式/耗时/跳过原因,附带 `stats.json` 统计——零额外注入、零 token 成本,自己判断重建效果;
 - **零部署硬件成本**:不买显卡、不租 GPU,重建调用走宿主已有的 LLM 路由,每轮只消耗百级 token;
 - **零额外运行时依赖**:用 Node 22+ 内置 `node:sqlite` 读库,安装即用。
 
@@ -70,8 +71,6 @@ dsh plugin --profile <你的配置文件名> add dsh-recall-rebuild
       timeoutMs: 8000
     inject:
       strategy: replace   # replace = 替换 prime-memory 的原文注入; append = 追加
-    user:
-      isolation: auto     # auto / strict / off;IM 多人场景建议 auto,强隐私用 strict
 ```
 
 ## 工作原理
@@ -123,12 +122,27 @@ flowchart LR
 | `user.isolation` | `auto` | IM 用户隔离模式:`auto` 剔除「明确属于其他用户」的记忆(无主记忆默认可见,命中后归位);`strict` 只注入「已归属当前用户」的记忆(新用户零记忆起步);`off` 不过滤。桌面直接对话自动不隔离 |
 | `user.isolationDir` | `''` | 归属索引目录;空 = `<DSH_HOME>/recall-rebuild/namespaces` |
 | `user.sourceTagPattern` | `''` | 覆盖内置 `<dsh_im_source>` 解析正则;不同桥接插件字段不同时可自定义(需含一个捕获组取用户 id) |
+| `observability.logEnabled` | `true` | 每轮重建审计日志开关(JSON Lines,按天滚动) |
+| `observability.logDir` | `''` | 日志目录;空 = `<DSH_HOME>/recall-rebuild/logs` |
+| `observability.includeFragments` | `true` | 日志是否记录原始检索碎片(与重建片段同屏对比);`false` 只记重建结果 |
+| `observability.statsEnabled` | `true` | 是否写统计文件 `stats.json`(30s 节流) |
+
+## 观测:怎么判断重建是否真的更好
+
+每轮运行后,打开日志目录(`~/.dsh/recall-rebuild/logs/`):
+
+- **`recall-YYYY-MM-DD.log`**:每轮一行 JSON,同一轮里 `fragments`(原始检索碎片)与 `rebuilt`(重建后片段)并排——直接对比同一份记忆的两种呈现,自己判断哪种更"像人";
+- **`stats.json`**:累计轮数 / 命中轮 / 重建成功 / 注入 / 替换数,看重建的覆盖面和替换率。
+
+字段速览:`round` 轮次、`userKey` 当前 IM 用户、`hitCount` 命中数、`memoryIds` 依据记忆 id、`fragments` 原始碎片、`rebuilt` 重建片段、`injection` 注入方式(`replaced` 替换了对方原文召回 / `appended` 追加 / `none` 未注入)、`latencyMs` 耗时、`error` 跳过原因。
+
+> 想运行时真·对比(同一轮同时看到原文召回与重建片段),把 `inject.strategy` 设为 `append`;想零成本对比,看日志即可。
 
 ## Roadmap
 
 - [ ] 更多记忆源 adapter(`dsh-memory-vault`、`dsh-auto-memory`、`dsh-memory-gate` 等变体);
 - [x] IM 用户级命名空间隔离(跨 QQ/微信的同一人记忆共享)—— v0.1.3 已实现;
-- [ ] 重建质量可观测:注入效果对比开关 + 每轮重建日志;
+- [x] 重建质量可观测(每轮 JSONL 日志 + stats)—— v0.1.4 已实现;
 - [ ] 睡眠巩固 / 联想扩散(更接近人脑的长期记忆子系统的后续阶段)。
 
 ## 局限(如实声明)
@@ -138,7 +152,8 @@ flowchart LR
 3. **用户识别依赖桥接插件约定**:优先解析 `<dsh_im_source>` JSON(senderId/chatId/threadId/botId),兜底常见字段(senderId/userId/openid/fromUser);不同桥接字段不同时用 `user.sourceTagPattern` 覆盖。识别不到用户(桌面会话)时不做隔离。
 4. **幻觉受控但非零**:重建 prompt 明确禁止编造碎片外事实,但 LLM 仍有漂移概率;注入标注记忆依据 id 便于审计。需要强事实的场景可关掉重建(`rebuild.enabled=false`)。
 5. **token 消耗**:每轮召回命中即产生一次重建调用(通常百级 token),由宿主模型路由计费。
-6. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
+6. **日志零成本但非自动诊断**:日志只记录事实(碎片/重建/耗时/跳过原因),不做好坏判定;用户可对比判断,或切换 `inject.strategy=append` 运行时对比。
+7. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
 
 ## 开发与验证
 
@@ -146,7 +161,7 @@ flowchart LR
 npm install
 npm run typecheck   # tsc --noEmit
 npm run build       # 编译到 dist/
-node scripts/verify.mjs   # 运行时验证:导出/Config/prime FTS+LIKE/palace Markdown/dsh-memory JSON/用户隔离/降级
+node scripts/verify.mjs   # 运行时验证:导出/Config/prime FTS+LIKE/palace Markdown/dsh-memory JSON/用户隔离/可观测
 npm pack --dry-run  # 检查发布包内容
 ```
 
@@ -167,6 +182,7 @@ This plugin upgrades the **recall/presentation layer**:
 - **Per-user memory isolation for IM (QQ/WeChat…)**: it parses the `<dsh_im_source>` block that IM bridge plugins attach to messages, extracts `senderId`/`chatId`, and keeps each user's memories out of other users' recalls via an ownership index it maintains in its **own** directory (`<DSH_HOME>/recall-rebuild/namespaces`) — the underlying memory DB is still never written. Modes: `auto` (drop memories clearly owned by others; ownerless memories are conservatively visible until claimed), `strict` (only inject memories already owned by the current user), `off` (no filtering). Desktop chats with no detectable user are never filtered;
 - Injects via `agent/pre-step` with `source.kind='plugin:recall-rebuild'`, so it is never re-captured by the underlying memory plugin; `replace` strategy swaps out the other plugin's raw-text recall in place, `append` adds alongside;
 - **Never blocks a conversation**: missing store, missing model route, timeout or rebuild failure all silently skip the step;
+- **Observable rebuild quality**: every round appends one JSONL audit line to `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` — raw fragments vs rebuilt snippet side by side, injection mode / latency / skip reason, plus a throttled `stats.json` — zero extra injection, zero token cost, so you can judge for yourself whether rebuilding beats raw recall;
 - **Zero infra cost**: no GPU/VM — rebuild calls go through the host's existing LLM routing, ~hundreds of tokens per hit; uses only Node's built-in `node:sqlite`.
 
 **Who it's for**: DSH desktop-pet / virtual-character / companion users who want the bot to "remember like a person" rather than "quote a file", including characters bridged to QQ/WeChat.
