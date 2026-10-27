@@ -31,6 +31,7 @@
 
 - **只读增强,零污染**:以 `readOnly` 打开现有记忆库(`$DSH_HOME/memory/memory.db`),不重写捕获管线、不写任何数据,装/卸都不影响原插件;
 - **多记忆源可插拔**:`source` 支持 dsh-prime-memory(SQLite FTS5)、@max-null/dsh-memory(JSON 记忆库)与 dsh-memory-palace(Markdown 文件)三种底层记忆,`auto` 自动探测,后续可继续扩展;
+- **IM 用户级命名空间隔离**:QQ/微信 多人共用角色时,自动解析桥接插件注入的 `<dsh_im_source>` sender 信息,把记忆按用户隔离——「用户 A 的记忆」不会注入给「用户 B」;同一人多会话记忆共享;隔离索引写在插件自己的目录,仍不碰底层记忆库;
 - **生成式重建**:在 `agent/pre-step` 用会话末尾消息召回碎片,LLM 重建为带语境/情绪/时间感的回忆片段,替代生硬原文注入;
 - **与生态共存不错位**:注入消息 `source.kind='plugin:recall-rebuild'`,不会被 prime-memory 当作新用户消息再次捕获/蒸馏;`replace` 策略原位替换对方的原文召回,`append` 策略追加,不重复注入;
 - **永不阻塞对话**:无记忆库/无模型路由/超时/重建失败,一律静默跳过本轮;
@@ -40,7 +41,7 @@
 ## 适合谁
 
 - DSH **桌宠 / 虚拟角色 / 陪伴型 AI** 玩家——想要"像人一样记着你",而不是"查到你的档案";
-- 已把角色接入 **QQ / 微信** 等 IM 的 DSH 用户——记忆需要跨会话"想得起来";
+- 已把角色接入 **QQ / 微信** 等 IM 的 DSH 用户——角色同时服务多个人的私聊/群聊时,希望**每个用户的记忆互不串味**,同一人跨会话记忆共享;
 - 觉得现有记忆插件"注入的原文太生硬、像在念记录"的开发者与用户。
 
 ## 安装
@@ -69,24 +70,30 @@ dsh plugin --profile <你的配置文件名> add dsh-recall-rebuild
       timeoutMs: 8000
     inject:
       strategy: replace   # replace = 替换 prime-memory 的原文注入; append = 追加
+    user:
+      isolation: auto     # auto / strict / off;IM 多人场景建议 auto,强隐私用 strict
 ```
 
 ## 工作原理
 
 ```mermaid
 flowchart LR
-    U["用户新消息"] --> P["agent/pre-step<br/>(本插件 prepend)"]
+    U["IM 用户新消息<br/>(带 &lt;dsh_im_source&gt; sender)"] --> P["agent/pre-step<br/>(本插件 prepend)"]
+    P --> K["提取当前用户键<br/>(senderId / chatId)"]
     P --> Q["构造召回查询<br/>(会话末尾消息)"]
     Q --> S[("记忆库<br/>prime(SQLite)/ dsh-memory(JSON)/ palace(Markdown)")]
-    S --> R["LLM 重建式回忆<br/>(碎片 → 带语境的回忆片段)"]
+    S --> F["用户命名空间过滤<br/>(auto/strict/off)"]
+    F --> R["LLM 重建式回忆<br/>(碎片 → 带语境的回忆片段)"]
     R --> I["注入回忆片段<br/>source.kind = plugin:recall-rebuild"]
+    F --> N[("归属索引<br/>~/.dsh/recall-rebuild/namespaces")]
+    F -. 命中候选归属当前用户 .-> N
     P --> M["模型推理"]
     I --> M
     M --> A["回复"]
     R -. "失败/超时 → 静默跳过" .-> M
 ```
 
-一句话流程:**检索 → 重建 → 注入**,而不是**检索 → 注入**。
+一句话流程:**提取用户 → 检索 → 用户隔离过滤 → 重建 → 注入**,而不是**检索 → 注入**。
 
 ## 与现有插件的错开与共存
 
@@ -113,20 +120,25 @@ flowchart LR
 | `inject.includeSources` | `true` | 注入时附记忆来源 id 标注 |
 | `query.tailMessages` | `8` | 召回查询取会话末尾消息条数 |
 | `query.maxChars` | `1200` | 召回查询字符上限 |
+| `user.isolation` | `auto` | IM 用户隔离模式:`auto` 剔除「明确属于其他用户」的记忆(无主记忆默认可见,命中后归位);`strict` 只注入「已归属当前用户」的记忆(新用户零记忆起步);`off` 不过滤。桌面直接对话自动不隔离 |
+| `user.isolationDir` | `''` | 归属索引目录;空 = `<DSH_HOME>/recall-rebuild/namespaces` |
+| `user.sourceTagPattern` | `''` | 覆盖内置 `<dsh_im_source>` 解析正则;不同桥接插件字段不同时可自定义(需含一个捕获组取用户 id) |
 
 ## Roadmap
 
 - [ ] 更多记忆源 adapter(`dsh-memory-vault`、`dsh-auto-memory`、`dsh-memory-gate` 等变体);
-- [ ] IM 用户级命名空间隔离(跨 QQ/微信的同一人记忆共享);
+- [x] IM 用户级命名空间隔离(跨 QQ/微信的同一人记忆共享)—— v0.1.3 已实现;
 - [ ] 重建质量可观测:注入效果对比开关 + 每轮重建日志;
 - [ ] 睡眠巩固 / 联想扩散(更接近人脑的长期记忆子系统的后续阶段)。
 
 ## 局限(如实声明)
 
 1. **只增强召回/呈现层**:底层库捕获了什么,重建就基于什么;库缺字段(如没有情绪标注)时,重建不会凭空造出它。
-2. **幻觉受控但非零**:重建 prompt 明确禁止编造碎片外事实,但 LLM 仍有漂移概率;注入标注记忆依据 id 便于审计。需要强事实的场景可关掉重建(`rebuild.enabled=false`)。
-3. **token 消耗**:每轮召回命中即产生一次重建调用(通常百级 token),由宿主模型路由计费。
-4. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
+2. **用户隔离是观察式启发式,非底层强隔离**:底层记忆库(prime 等)没有 IM 用户字段,本插件靠「谁在会话中命中过这条记忆,它就归谁」建立归属。因此:`auto` 模式防得住「已明确归属他人」的记忆,防不住「从未被命中过的无主记忆」(它们默认可见,命中后归位);`strict` 模式从零记忆起步,聊过的话题才开始归位。需要强隐私隔离且不介意冷启动时用 `strict`。
+3. **用户识别依赖桥接插件约定**:优先解析 `<dsh_im_source>` JSON(senderId/chatId/threadId/botId),兜底常见字段(senderId/userId/openid/fromUser);不同桥接字段不同时用 `user.sourceTagPattern` 覆盖。识别不到用户(桌面会话)时不做隔离。
+4. **幻觉受控但非零**:重建 prompt 明确禁止编造碎片外事实,但 LLM 仍有漂移概率;注入标注记忆依据 id 便于审计。需要强事实的场景可关掉重建(`rebuild.enabled=false`)。
+5. **token 消耗**:每轮召回命中即产生一次重建调用(通常百级 token),由宿主模型路由计费。
+6. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
 
 ## 开发与验证
 
@@ -134,7 +146,7 @@ flowchart LR
 npm install
 npm run typecheck   # tsc --noEmit
 npm run build       # 编译到 dist/
-node scripts/verify.mjs   # 运行时验证:导出/Config/prime FTS+LIKE/palace Markdown/dsh-memory JSON/降级
+node scripts/verify.mjs   # 运行时验证:导出/Config/prime FTS+LIKE/palace Markdown/dsh-memory JSON/用户隔离/降级
 npm pack --dry-run  # 检查发布包内容
 ```
 
@@ -152,6 +164,7 @@ This plugin upgrades the **recall/presentation layer**:
 
 - Opens the existing memory store (`$DSH_HOME/memory/memory.db`) **read-only**, never writes, never touches the capture pipeline;
 - Before every model step, it retrieves memory fragments and asks the LLM to **reconstruct** them into contextual, emotionally-toned recollection snippets (using only in-fragment facts — no fabrication);
+- **Per-user memory isolation for IM (QQ/WeChat…)**: it parses the `<dsh_im_source>` block that IM bridge plugins attach to messages, extracts `senderId`/`chatId`, and keeps each user's memories out of other users' recalls via an ownership index it maintains in its **own** directory (`<DSH_HOME>/recall-rebuild/namespaces`) — the underlying memory DB is still never written. Modes: `auto` (drop memories clearly owned by others; ownerless memories are conservatively visible until claimed), `strict` (only inject memories already owned by the current user), `off` (no filtering). Desktop chats with no detectable user are never filtered;
 - Injects via `agent/pre-step` with `source.kind='plugin:recall-rebuild'`, so it is never re-captured by the underlying memory plugin; `replace` strategy swaps out the other plugin's raw-text recall in place, `append` adds alongside;
 - **Never blocks a conversation**: missing store, missing model route, timeout or rebuild failure all silently skip the step;
 - **Zero infra cost**: no GPU/VM — rebuild calls go through the host's existing LLM routing, ~hundreds of tokens per hit; uses only Node's built-in `node:sqlite`.
