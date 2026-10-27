@@ -15,6 +15,8 @@ import { openMemorySource, type LoggerLike } from './store.js';
 import { registerRecallRebuild } from './recall.js';
 import { NamespaceStore } from './namespace.js';
 import { RebuildLogger } from './observability.js';
+import { ConsolidatedStore } from './consolidated.js';
+import { runConsolidation } from './consolidate.js';
 
 export const name = 'recall-rebuild';
 export const inject = ['llm'];
@@ -70,6 +72,23 @@ function resolveLogDir(config: RecallRebuildConfig, logger: LoggerLike): string 
   return fallback;
 }
 
+/** 睡眠巩固层目录:<DSH_HOME>/recall-rebuild/consolidated(缺省 ~/.dsh/recall-rebuild/consolidated)。 */
+function resolveConsolidateDir(config: RecallRebuildConfig, logger: LoggerLike): string {
+  if (config.consolidate.dir) return config.consolidate.dir;
+  try {
+    const home = dshHomePath();
+    if (home) return path.join(home, 'recall-rebuild', 'consolidated');
+  } catch {
+    /* 落到兜底 */
+  }
+  const base = process.env.HOME || process.env.USERPROFILE || '';
+  const fallback = base ? path.join(base, '.dsh', 'recall-rebuild', 'consolidated') : '';
+  if (!fallback) {
+    logger.warn(`[recall-rebuild] 无法确定巩固层目录,请在 config.consolidate.dir 显式指定`);
+  }
+  return fallback;
+}
+
 export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<void> {
   const logger: LoggerLike = ctx.logger;
   const dataDir = resolveDataDir(config, logger);
@@ -92,6 +111,10 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
     logger,
   });
 
+  // 睡眠巩固层(长期记忆子系统):自己的目录,底层记忆库保持只读
+  const consolidated = new ConsolidatedStore(resolveConsolidateDir(config, logger), logger);
+  consolidated.load();
+
   if (store.ok) {
     logger.info(`[recall-rebuild] 已只读挂载记忆库: ${store.label}`);
   } else {
@@ -101,10 +124,32 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
     );
   }
 
-  registerRecallRebuild(ctx, store, config, logger, namespaces, obsLog);
+  registerRecallRebuild(ctx, store, config, logger, namespaces, obsLog, consolidated);
+
+  // 睡眠巩固调度:启动后空闲 10s 查一次,之后按 checkIntervalMs 定时查;
+  // 触发条件由 shouldRun 判定(pending 达标 + 距上次巩固超间隔),真正执行时
+  // 在空闲间隙异步跑,绝不阻塞对话;失败保留 pending 下次再试。
+  const runIfDue = async () => {
+    try {
+      if (consolidated.shouldRun(config.consolidate, Date.now())) {
+        await runConsolidation(ctx, store, consolidated, config.consolidate, logger);
+      }
+    } catch (err) {
+      logger.warn(
+        `[recall-rebuild] 睡眠巩固调度失败(下次再试): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+  const firstTimer = setTimeout(() => void runIfDue(), 10_000);
+  const interval = setInterval(() => void runIfDue(), config.consolidate.checkIntervalMs);
+  ctx.effect(() => () => {
+    clearTimeout(firstTimer);
+    clearInterval(interval);
+  });
   logger.info(
     `[recall-rebuild] 重建式回忆增强就绪 ` +
       `(rebuild=${config.rebuild.enabled}, inject=${config.inject.strategy}, source=${config.source}, ` +
-      `isolation=${config.user.isolation}, log=${config.observability.logEnabled})`,
+      `isolation=${config.user.isolation}, log=${config.observability.logEnabled}, ` +
+      `consolidate=${config.consolidate.enabled})`,
   );
 }

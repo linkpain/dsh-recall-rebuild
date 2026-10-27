@@ -73,6 +73,38 @@ export interface ObservabilityOptions {
   statsEnabled: boolean;
 }
 
+/** 睡眠巩固(长期记忆子系统)选项。 */
+export interface ConsolidateOptions {
+  /** 巩固总开关。 */
+  enabled: boolean;
+  /** 巩固层目录;空 = <DSH_HOME>/recall-rebuild/consolidated。 */
+  dir: string;
+  /** 待巩固碎片累积达到多少条才触发一次巩固。 */
+  minFragments: number;
+  /** 距上次巩固的最短间隔(ms);防止巩固过于频繁。 */
+  minIntervalMs: number;
+  /** 定时检查间隔(ms)。 */
+  checkIntervalMs: number;
+  /** 单次巩固最多处理的碎片条数。 */
+  maxFragmentsPerRun: number;
+  /** 聚类相似度阈值(0-1);同主题碎片 ≥ 阈值归为一簇。 */
+  clusterThreshold: number;
+  /** 单簇最多碎片条数。 */
+  maxCluster: number;
+  /** 单条巩固输出字符上限。 */
+  maxOutputChars: number;
+  /** 巩固调用温度(巩固要稳,默认低于重建)。 */
+  temperature: number;
+  /** 巩固调用输出 token 上限。 */
+  maxTokens: number;
+  /** 单簇巩固超时(ms);离线任务可放宽。 */
+  timeoutMs: number;
+  /** 遗忘阈值:置信度低于它且长期未命中 → dormant(召回降权)。 */
+  confidenceThreshold: number;
+  /** 多少天未命中(且低置信)进入 dormant。 */
+  dormantDays: number;
+}
+
 export interface RecallRebuildConfig {
   /** 总开关。 */
   enabled: boolean;
@@ -91,6 +123,7 @@ export interface RecallRebuildConfig {
   query: QueryOptions;
   user: UserIsolationOptions;
   observability: ObservabilityOptions;
+  consolidate: ConsolidateOptions;
 }
 
 export const recallRebuildSchema = Schema.object({
@@ -126,5 +159,21 @@ export const recallRebuildSchema = Schema.object({
     logDir: Schema.string().default(''),
     includeFragments: Schema.boolean().default(true),
     statsEnabled: Schema.boolean().default(true),
+  }).default({}),
+  consolidate: Schema.object({
+    enabled: Schema.boolean().default(true),
+    dir: Schema.string().default(''),
+    minFragments: Schema.number().min(5).max(200).default(20),
+    minIntervalMs: Schema.number().min(60000).max(86400000 * 7).default(21600000),
+    checkIntervalMs: Schema.number().min(60000).max(86400000).default(3600000),
+    maxFragmentsPerRun: Schema.number().min(10).max(200).default(50),
+    clusterThreshold: Schema.number().min(0.05).max(0.9).default(0.25),
+    maxCluster: Schema.number().min(2).max(20).default(8),
+    maxOutputChars: Schema.number().min(40).max(2000).default(400),
+    temperature: Schema.number().min(0).max(1.5).default(0.4),
+    maxTokens: Schema.number().min(64).max(4096).default(1024),
+    timeoutMs: Schema.number().min(1000).max(120000).default(20000),
+    confidenceThreshold: Schema.number().min(0.1).max(0.9).default(0.4),
+    dormantDays: Schema.number().min(3).max(365).default(30),
   }).default({}),
 }).default({});

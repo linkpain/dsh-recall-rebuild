@@ -16,9 +16,10 @@ import type { Context } from '@deepseek-ai/cordis';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { RecallRebuildConfig } from './config.js';
 import { rebuildMemory } from './rebuild.js';
-import type { LoggerLike, MemoryStore } from './store.js';
+import type { LoggerLike, MemoryRecord, MemoryStore } from './store.js';
 import { extractUserKey, type NamespaceStore } from './namespace.js';
 import type { RebuildLogger } from './observability.js';
+import type { ConsolidatedStore } from './consolidated.js';
 
 interface MsgLike {
   source?: { kind?: string; plugin?: string; form?: string };
@@ -99,6 +100,67 @@ function buildInjectionMessage(
   }) as unknown as MsgLike;
 }
 
+/**
+ * 睡眠巩固层召回:把 active 巩固条目并入检索结果(高置信稳定记忆),
+ * 命中条目 → touch(越用越稳)+ 联想扩散(附加强关联主题片段)。
+ * 受用户隔离约束:userKey 为空(null)的条目共享可见;strict 模式只收当前用户。
+ */
+function mergeConsolidated(
+  memories: MemoryRecord[],
+  consolidated: ConsolidatedStore,
+  userKey: string | null,
+  cfg: RecallRebuildConfig,
+  logger: LoggerLike,
+): MemoryRecord[] {
+  try {
+    const now = Date.now();
+    const forgetOpts = {
+      confidenceThreshold: cfg.consolidate.confidenceThreshold,
+      dormantDays: cfg.consolidate.dormantDays,
+    };
+    const extra: MemoryRecord[] = [];
+    for (const m of consolidated.list()) {
+      if (m.status !== 'active') continue;
+      if (m.userKey !== null && m.userKey !== userKey) continue; // 归属他人(当前用户存在时)
+      if (cfg.user.isolation === 'strict' && m.userKey === null && userKey !== null) continue;
+      consolidated.touch(m.id, now, forgetOpts);
+      extra.push({
+        id: m.id,
+        content: m.content,
+        type: m.type,
+        sceneName: '巩固记忆',
+        family: '',
+        priority: 10, // 高置信稳定记忆优先于细节碎片
+        timestampStr: new Date(m.updatedAt).toISOString().slice(0, 10),
+      });
+      // 联想扩散:强关联(weight ≥ 2)的其他主题最多带 2 条
+      const linked = consolidated.strongLinks(m.id, 2, 2);
+      for (const l of linked) {
+        const lm = consolidated.get(l.id);
+        if (!lm || lm.status !== 'active') continue;
+        extra.push({
+          id: lm.id,
+          content: lm.content,
+          type: lm.type,
+          sceneName: `联想:${l.weight}`,
+          family: '',
+          priority: 6,
+          timestampStr: new Date(lm.updatedAt).toISOString().slice(0, 10),
+        });
+      }
+    }
+    // 高置信优先:排序后取合并预算(底层碎片 + 巩固层 ≤ maxResults * 2)
+    return [...memories, ...extra]
+      .sort((a, b) => b.priority - a.priority)
+      .slice(0, cfg.rebuild.maxResults * 2);
+  } catch (err) {
+    logger.warn(
+      `[recall-rebuild] 巩固层召回失败(仅用底层碎片): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return memories;
+  }
+}
+
 export function registerRecallRebuild(
   ctx: Context,
   store: MemoryStore,
@@ -106,6 +168,7 @@ export function registerRecallRebuild(
   logger: LoggerLike,
   namespaces?: NamespaceStore,
   obsLog?: RebuildLogger,
+  consolidated?: ConsolidatedStore,
 ): void {
   if (!cfg.enabled) return;
   // cordis 的事件键是插件可扩展的字符串;此处收窄为所需的最小监听器形状
@@ -146,6 +209,13 @@ export function registerRecallRebuild(
           injection: 'none' as const,
           latencyMs: Date.now() - startedAt,
         });
+        // 睡眠巩固层:累积本轮命中碎片(供离线巩固)
+        if (consolidated) {
+          consolidated.addPending(
+            memories.map((m) => ({ id: m.id, content: m.content, userKey })),
+            cfg.consolidate.maxFragmentsPerRun,
+          );
+        }
         if (memories.length === 0) {
           if (obsLog) obsLog.log({ ...logBase() });
           return decision;
@@ -159,6 +229,10 @@ export function registerRecallRebuild(
           }
           // 只把"本轮实际保留"的候选记为当前用户归属(无主记忆随命中归位)
           namespaces.recordHits(userKey, memories);
+        }
+        // 睡眠巩固层召回:高置信稳定记忆优先,联想扩散附加强关联主题
+        if (consolidated) {
+          memories = mergeConsolidated(memories, consolidated, userKey, cfg, logger);
         }
         const rebuilt = await rebuildMemory(ctx, memories, query, cfg.rebuild, payload.signal, logger);
         if (!rebuilt || !rebuilt.text) {
