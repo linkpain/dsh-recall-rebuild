@@ -38,6 +38,7 @@ check('Config source 支持 dsh-memory', plugin.Config({ source: 'dsh-memory' })
 check('Config user.isolation 默认 auto', cfg.user.isolation === 'auto' && cfg.user.isolationDir === '');
 check('Config user.isolation 覆盖生效', plugin.Config({ user: { isolation: 'strict' } }).user.isolation === 'strict');
 check('Config observability 默认开启', cfg.observability.logEnabled === true && cfg.observability.includeFragments === true);
+check('Config consolidate 默认开启', cfg.consolidate.enabled === true && cfg.consolidate.minFragments === 20);
 
 // ── 2. store 适配器真实检索 ──────────────────────────────────
 console.log('[2] store 适配器(临时 SQLite 库)');
@@ -303,6 +304,73 @@ check('obs:统计累积正确', stats.rounds === 2 && stats.hits === 1 && stats.
 const noFragStats = obsNoFrag.snapshot();
 check('obs:snapshot 独立计数', noFragStats.rounds === 1);
 fs.rmSync(obsDir, { recursive: true, force: true });
+
+// ── 2f. 睡眠巩固层 ───────────────────────────────────────────
+console.log('[2f] 睡眠巩固层');
+const { tokenize, similarity, clusterize, isDormant, parseConsolidationOutput, ConsolidatedStore } =
+  await import(`${distUrl}consolidated.js`);
+check('cons:tokenize 产出 2-gram 集合', tokenize('用户喜欢喝冰美式咖啡').length >= 2);
+check('cons:相似度同主题高、异主题低',
+  similarity('用户喜欢喝冰美式咖啡', '用户爱喝冰美式咖啡,常去星巴克') >
+  similarity('用户喜欢喝冰美式咖啡', '用户下周要去成都出差'));
+const cluDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-clu-'));
+const clu = clusterize(
+  [
+    { id: 'a', content: '用户喜欢喝冰美式咖啡,常去星巴克' },
+    { id: 'b', content: '用户爱喝冰美式咖啡,每次去都点超大杯' },
+    { id: 'c', content: '用户养了一只叫煤球的黑色猫' },
+    { id: 'd', content: '用户下周要去成都出差三天' },
+  ],
+  0.2,
+  8,
+);
+check('cons:同主题碎片聚为一簇', clu.some((g) => g.length >= 2 && g.includes('a') && g.includes('b')), JSON.stringify(clu));
+check('cons:无关碎片不强行入簇', clu.some((g) => g.includes('c') && g.includes('d')) === false);
+check('cons:parse 严格 JSON 输出', parseConsolidationOutput('好的,以下是结果:\n{"memories":[{"type":"preference","content":"用户喜欢冰美式"}]}').length === 1);
+check('cons:parse 非法 type 兜底 stable-fact',
+  parseConsolidationOutput('{"memories":[{"type":"weird","content":"x"}]}')[0]?.type === 'stable-fact');
+check('cons:parse 拒绝编造空输出', parseConsolidationOutput('{"memories":[]}').length === 0);
+const nowMs = Date.now();
+const dormantSample = {
+  id: 'x', userKey: null, type: 'stable-fact', content: 'x', sourceIds: ['r1'],
+  confidence: 0.3, status: 'active', createdAt: nowMs - 40 * 86400000,
+  updatedAt: nowMs - 40 * 86400000, touchCount: 0,
+};
+check('cons:低置信+长期未命中 → dormant',
+  isDormant(dormantSample, nowMs, { confidenceThreshold: 0.4, dormantDays: 30 }) === true);
+check('cons:高置信不遗忘',
+  isDormant({ ...dormantSample, confidence: 0.8 }, nowMs, { confidenceThreshold: 0.4, dormantDays: 30 }) === false);
+const csDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-cs-'));
+const cs = new ConsolidatedStore(csDir, logger);
+cs.load();
+check('cons:巩固库读写', cs.pending().length === 0);
+cs.addPending([{ id: 'r1', content: '用户喜欢喝冰美式咖啡', userKey: 'im:qq:u_alice' }], 50);
+check('cons:pending 累积', cs.pending().length === 1);
+cs.addPending([{ id: 'r1', content: '重复', userKey: null }], 50);
+check('cons:pending 去重', cs.pending().length === 1);
+cs.upsert({
+  id: 'c_1', userKey: null, type: 'preference', content: '用户喜欢喝冰美式咖啡',
+  sourceIds: ['r1'], confidence: 0.6, status: 'active', createdAt: nowMs, updatedAt: nowMs, touchCount: 0,
+});
+cs.upsert({
+  id: 'c_2', userKey: null, type: 'pattern', content: '用户去星巴克常点超大杯',
+  sourceIds: ['r1'], confidence: 0.6, status: 'active', createdAt: nowMs, updatedAt: nowMs, touchCount: 0,
+});
+check('cons:条目持久化', cs.get('c_1')?.content.includes('冰美式'));
+cs.addLink('c_1', 'c_2', '同轮巩固');
+cs.addLink('c_1', 'c_2', '同轮巩固');
+check('cons:联想边权重累加', cs.strongLinks('c_1', 2, 5).length === 1 && cs.strongLinks('c_1', 2, 5)[0].weight === 2);
+cs.touch('c_1', nowMs, { confidenceThreshold: 0.4, dormantDays: 30 });
+check('cons:touch 计数', cs.get('c_1')?.touchCount === 1);
+check('cons:触发判定(pending 不足不触发)', cs.shouldRun({ minFragments: 20, minIntervalMs: 0 }, nowMs) === false);
+// 重启加载(原子落盘后重读)
+const cs2 = new ConsolidatedStore(csDir, logger);
+cs2.load();
+check('cons:重启后数据仍在', cs2.get('c_2')?.content.includes('超大杯') && cs2.pending().length === 1);
+cs.markRun(nowMs);
+check('cons:markRun 记录运行', cs.metaInfo().runCount === 1);
+fs.rmSync(cluDir, { recursive: true, force: true });
+fs.rmSync(csDir, { recursive: true, force: true });
 
 // ── 3. 重建引擎纯逻辑(不实际调用 LLM) ───────────────────────
 console.log('[3] rebuild 碎片组装预算');
