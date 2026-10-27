@@ -8,6 +8,8 @@
  *   绝不抛错拖垮宿主启动。
  */
 import { createRequire } from 'node:module';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -209,4 +211,160 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
       db = null;
     },
   };
+}
+
+/* ── dsh-memory-palace(Markdown 文件)适配器 ─────────────────────
+ * memory-palace 的长期记忆是"人类可读 Markdown":
+ * - 用户级:~/.deepseek-harness/MEMORY.md
+ * - 工作区:<cwd>/.deepseek-harness/MEMORY.md(旧嵌套 <cwd>/.deepseek-harness/memory/MEMORY.md 兼容)
+ * - 每日日志:<cwd>/.deepseek-harness/memory/YYYY-MM-DD.md(记忆子代理维护)
+ * 文件结构:`## 章节` + `- 条目` 列表行;`#`/`<!--` 为结构行;`~~text~~` 为墓碑(已删除)。
+ * 检索语义与 palace 原版一致:按行归一化(trim+合空白+小写)子串包含匹配。
+ * 只读,绝不写文件。 */
+
+interface PalaceEntry {
+  rel: string;      // 展示标签(~/.deepseek-harness/MEMORY.md 等)
+  section: string;  // 所在 ## 章节标题
+  lineNo: number;   // 源文件行号(用于 id)
+  content: string;  // 条目正文(已剥列表符、合空白)
+  ts: string;       // 时间线索(日志日期或文件 mtime 的 YYYY-MM-DD)
+}
+
+const palaceNorm = (s: string): string => s.trim().replace(/\s+/g, ' ').toLowerCase();
+
+function palaceMtimeDate(file: string): string {
+  try {
+    const st = fs.statSync(file);
+    const d = new Date(st.mtimeMs);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${mm}-${dd}`;
+  } catch {
+    return '';
+  }
+}
+
+/** 长期记忆文件候选(存在才收集)。 */
+function collectPalaceFiles(cwd: string): Array<{ file: string; rel: string }> {
+  const home = os.homedir();
+  const candidates: Array<{ file: string; rel: string }> = [
+    { file: path.join(home, '.deepseek-harness', 'MEMORY.md'), rel: '~/.deepseek-harness/MEMORY.md' },
+    { file: path.join(cwd, '.deepseek-harness', 'MEMORY.md'), rel: '<cwd>/.deepseek-harness/MEMORY.md' },
+    { file: path.join(cwd, '.deepseek-harness', 'memory', 'MEMORY.md'), rel: '<cwd>/.deepseek-harness/memory/MEMORY.md' },
+  ];
+  return candidates.filter((c) => fs.existsSync(c.file));
+}
+
+/** 每日日志候选(最近 limit 份,按日期降序)。 */
+function collectPalaceLogs(cwd: string, limit = 3): Array<{ file: string; rel: string; date: string }> {
+  const dir = path.join(cwd, '.deepseek-harness', 'memory');
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n))
+    .sort()
+    .reverse()
+    .slice(0, limit)
+    .map((n) => ({
+      file: path.join(dir, n),
+      rel: `<cwd>/.deepseek-harness/memory/${n}`,
+      date: n.slice(0, 10),
+    }));
+}
+
+/** 解析单个 palace Markdown 文件为条目列表(只读;结构行/墓碑跳过)。 */
+function parsePalaceFile(file: string, rel: string, ts: string): PalaceEntry[] {
+  let text = '';
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const out: PalaceEntry[] = [];
+  let section = '';
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const t = (lines[i] ?? '').trim();
+    if (!t || t.startsWith('<!--')) continue;
+    const sec = /^##\s+(.+?)\s*$/.exec(t);
+    if (sec) {
+      section = (sec[1] ?? '').trim();
+      continue;
+    }
+    if (t.startsWith('#') || t.includes('~~')) continue; // 结构行与墓碑(已删除)不参与检索
+    const content = t.replace(/^[-*]\s+/, '').replace(/\s+/g, ' ').trim();
+    if (!content) continue;
+    out.push({ rel, section, lineNo: i + 1, content, ts });
+  }
+  return out;
+}
+
+/** 打开 dsh-memory-palace 的只读记忆源(cwd = DSH 工作目录,用于定位工作区记忆)。 */
+export function openPalaceStore(cwd: string, logger: LoggerLike): MemoryStore {
+  const files = collectPalaceFiles(cwd);
+  const logs = collectPalaceLogs(cwd);
+  const entries: PalaceEntry[] = [];
+  for (const f of files) entries.push(...parsePalaceFile(f.file, f.rel, palaceMtimeDate(f.file)));
+  for (const l of logs) entries.push(...parsePalaceFile(l.file, l.rel, l.date));
+  if (entries.length === 0) {
+    logger.warn(
+      `[recall-rebuild] 未找到 memory-palace 记忆文件(检查 ~/.deepseek-harness/MEMORY.md 或 ` +
+        `<cwd>/.deepseek-harness/MEMORY.md、每日日志),记忆读取停用`,
+    );
+    return disabledStore('未找到 memory-palace 记忆文件');
+  }
+  const sources = [...new Set(entries.map((e) => e.rel))];
+  return {
+    ok: true,
+    label: `dsh-memory-palace (${sources.join(', ')})`,
+    search(query: string, limit: number): MemoryRecord[] {
+      const words = tokenizeQuery(query);
+      if (words.length === 0) return [];
+      const scored: Array<{ e: PalaceEntry; hits: number }> = [];
+      for (const e of entries) {
+        const nl = palaceNorm(e.content);
+        let hits = 0;
+        for (const w of words) if (nl.includes(w)) hits += 1;
+        if (hits > 0) scored.push({ e, hits });
+      }
+      // 命中词数优先,其次时间倒序(最近优先)
+      scored.sort((a, b) => b.hits - a.hits || (a.e.ts < b.e.ts ? 1 : a.e.ts > b.e.ts ? -1 : 0));
+      return scored.slice(0, limit).map(({ e, hits }) => ({
+        id: `${e.rel}#L${e.lineNo}`,
+        content: e.content,
+        type: 'palace',
+        sceneName: e.section,
+        family: e.rel,
+        priority: hits,
+        timestampStr: e.ts,
+      }));
+    },
+    close(): void {
+      /* 无资源 */
+    },
+  };
+}
+
+/** 记忆来源路由:auto 探测 prime → palace,或按 source 显式指定。 */
+export function openMemorySource(
+  source: 'auto' | 'prime' | 'palace',
+  opts: { dataDir: string; cwd: string; logger: LoggerLike },
+): MemoryStore {
+  const { dataDir, cwd, logger } = opts;
+  if (source === 'prime') return openPrimeMemoryStore(dataDir, logger);
+  if (source === 'palace') return openPalaceStore(cwd, logger);
+  // auto:prime-memory 库存在则优先(打开失败再落 palace),否则尝试 palace
+  const primeDb = path.join(dataDir, 'memory.db');
+  if (fs.existsSync(primeDb)) {
+    const s = openPrimeMemoryStore(dataDir, logger);
+    if (s.ok) return s;
+    logger.warn(`[recall-rebuild] prime-memory 库存在但打不开,尝试 memory-palace 记忆源`);
+  }
+  const p = openPalaceStore(cwd, logger);
+  if (p.ok) return p;
+  return disabledStore('未检测到 prime-memory 或 memory-palace 记忆库');
 }

@@ -11,7 +11,7 @@ import * as path from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import { recallRebuildSchema, type RecallRebuildConfig } from './config.js';
-import { openPrimeMemoryStore, type LoggerLike } from './store.js';
+import { openMemorySource, type LoggerLike } from './store.js';
 import { registerRecallRebuild } from './recall.js';
 
 export const name = 'recall-rebuild';
@@ -37,9 +37,11 @@ function resolveDataDir(config: RecallRebuildConfig, logger: LoggerLike): string
 export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<void> {
   const logger: LoggerLike = ctx.logger;
   const dataDir = resolveDataDir(config, logger);
+  // 工作目录:用于定位 memory-palace 的工作区记忆文件(默认 DSH 进程 cwd)
+  const cwd = process.cwd();
 
-  // 适配器当前只读 prime-memory 库;source=auto 时探测它,其余来源后续扩展
-  const store = openPrimeMemoryStore(dataDir, logger);
+  // 可插拔记忆源:prime(SQLite FTS5)| palace(Markdown 文件)| auto(自动探测)
+  const store = openMemorySource(config.source, { dataDir, cwd, logger });
   ctx.effect(() => () => store.close());
 
   if (store.ok) {
@@ -47,7 +49,7 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
   } else {
     logger.warn(
       `[recall-rebuild] 记忆库不可用(${store.label}),插件按只观察模式运行(不注入)。` +
-        `请先安装并运行 dsh-prime-memory,或确认 config.dataDir 正确`,
+        `请先安装并运行 dsh-prime-memory / dsh-memory-palace,或确认 config.dataDir / cwd 正确`,
     );
   }
 
