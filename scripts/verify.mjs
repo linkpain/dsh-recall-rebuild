@@ -35,6 +35,8 @@ const cfg = plugin.Config({});
 check('Config 默认值生效', cfg.enabled === true && cfg.rebuild.enabled === true && cfg.inject.strategy === 'replace');
 check('Config 覆盖生效', plugin.Config({ inject: { strategy: 'append' } }).inject.strategy === 'append');
 check('Config source 支持 dsh-memory', plugin.Config({ source: 'dsh-memory' }).source === 'dsh-memory');
+check('Config user.isolation 默认 auto', cfg.user.isolation === 'auto' && cfg.user.isolationDir === '');
+check('Config user.isolation 覆盖生效', plugin.Config({ user: { isolation: 'strict' } }).user.isolation === 'strict');
 
 // ── 2. store 适配器真实检索 ──────────────────────────────────
 console.log('[2] store 适配器(临时 SQLite 库)');
@@ -197,6 +199,57 @@ const missingDm = openDshMemoryStore(path.join(dmCwd, 'nope'), logger);
 check('dsh-memory 缺失降级 ok=false', missingDm.ok === false);
 fs.rmSync(dmHome, { recursive: true, force: true });
 fs.rmSync(dmCwd, { recursive: true, force: true });
+
+// ── 2d. IM 用户命名空间隔离 ─────────────────────────────────
+console.log('[2d] 用户命名空间隔离');
+const { NamespaceStore, extractUserKey } = await import(`${distUrl}namespace.js`);
+check('extractUserKey 解析 <dsh_im_source> senderId',
+  extractUserKey(['<dsh_im_source>{"channel":"qq","senderId":"u_alice","chatId":"c1"}</dsh_im_source> 你好']) === 'im:qq:u_alice');
+check('extractUserKey 优先 senderId 而非 chatId',
+  extractUserKey(['<dsh_im_source>{"channel":"wechat","chatId":"room1","threadId":"t1"}</dsh_im_source>']) === 'im:wechat:room1');
+check('extractUserKey 兜底字段 openid',
+  extractUserKey(['openid=oX7AbCdEf123456789'])?.startsWith('im-fallback:') === true);
+check('extractUserKey 桌面文本返回 null', extractUserKey(['今天天气怎么样']) === null);
+check('extractUserKey 自定义正则生效',
+  extractUserKey(['<[IM] user: bob42'], '<\\[IM\\]\\s+user:\\s*([^\\]]+)') === 'im-custom:bob42');
+
+const nsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-ns-'));
+const ns = new NamespaceStore(nsDir, logger);
+ns.ensureDir();
+// 构造候选:memA 无主、memB 属于 alice、memC 属于 bob(共享给 alice+bob)
+const mk = (id, content) => ({ id, content, type: 'fact', sceneName: '', family: '', priority: 1, timestampStr: '' });
+// 手工预置归属文件:alice → [memB, memC];bob → [memC]
+const writeOwner = (file, ids) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ memoryIds: Object.fromEntries(ids.map((i) => [i, Date.now()])) }), 'utf8');
+};
+writeOwner(path.join(nsDir, 'im_qq_u_alice.json'), ['memB', 'memC']);
+writeOwner(path.join(nsDir, 'im_qq_u_bob.json'), ['memC']);
+const cands = [mk('memA', '用户 A 的咖啡偏好(无主)'), mk('memB', '用户 A 的宠物猫'), mk('memC', '共享群聊话题')];
+check('auto:保留无主+自己的+共享(alice:memA 无主/memB 自己/memC 共享)',
+  ns.filter(cands, 'im:qq:u_alice', 'auto').map((m) => m.id).join(',') === 'memA,memB,memC',
+  ns.filter(cands, 'im:qq:u_alice', 'auto').map((m) => m.id).join(','));
+check('auto:bob 视角保留无主+共享,剔除 alice 私享',
+  ns.filter(cands, 'im:qq:u_bob', 'auto').map((m) => m.id).join(',') === 'memA,memC');
+check('strict:alice 只保留自己的(含共享)',
+  ns.filter(cands, 'im:qq:u_alice', 'strict').map((m) => m.id).join(',') === 'memB,memC');
+check('strict:新用户 dave 零记忆',
+  ns.filter(cands, 'im:qq:u_dave', 'strict').length === 0);
+check('off:不过滤', ns.filter(cands, 'im:qq:u_alice', 'off').length === 3);
+check('userKey=null 不过滤', ns.filter(cands, null, 'strict').length === 3);
+// recordHits:alice 命中无主 memA → 归位 → bob 视角 auto 下 memA 被剔除
+ns.recordHits('im:qq:u_alice', [mk('memA', 'x')]);
+check('recordHits 后 alice 归属含 memA',
+  ns.filter(cands, 'im:qq:u_alice', 'auto').map((m) => m.id).includes('memA'));
+check('recordHits 后 memA 归位,bob auto 不再可见',
+  ns.filter(cands, 'im:qq:u_bob', 'auto').map((m) => m.id).join(',') === 'memC');
+const aliceAfter = JSON.parse(fs.readFileSync(path.join(nsDir, 'im_qq_u_alice.json'), 'utf8'));
+check('归属文件原子写入(memA 已持久化)', Object.keys(aliceAfter.memoryIds).includes('memA'));
+// 重复 recordHits 不产生重复 key 或异常
+ns.recordHits('im:qq:u_alice', [mk('memA', 'x')]);
+const aliceAgain = JSON.parse(fs.readFileSync(path.join(nsDir, 'im_qq_u_alice.json'), 'utf8'));
+check('重复记录幂等', Object.keys(aliceAgain.memoryIds).length === Object.keys(aliceAfter.memoryIds).length);
+fs.rmSync(nsDir, { recursive: true, force: true });
 
 // ── 3. 重建引擎纯逻辑(不实际调用 LLM) ───────────────────────
 console.log('[3] rebuild 碎片组装预算');
