@@ -52,11 +52,12 @@ export interface RecallRebuildConfig {
   dataDir: string;
   /**
    * 记忆来源:
-   * - 'auto':自动探测 —— prime-memory 库存在则读它,否则尝试 memory-palace 文件;
+   * - 'auto':自动探测 —— prime-memory 库存在则读它,否则依次尝试 dsh-memory(JSON)与 memory-palace(Markdown);
    * - 'prime':只读 dsh-prime-memory 的 SQLite 库($dataDir/memory.db);
+   * - 'dsh-memory':只读 @max-null/dsh-memory 的 JSON 记忆(~/.dsh/storages/memory.json 与 <cwd>/.dsh/storages/);
    * - 'palace':只读 dsh-memory-palace 的 Markdown 文件(~/.deepseek-harness/MEMORY.md 与 <cwd>/.deepseek-harness/memory/)。
    */
-  source: 'auto' | 'prime' | 'palace';
+  source: 'auto' | 'prime' | 'dsh-memory' | 'palace';
   rebuild: RebuildOptions;
   inject: InjectOptions;
   query: QueryOptions;
@@ -65,7 +66,7 @@ export interface RecallRebuildConfig {
 export const recallRebuildSchema = Schema.object({
   enabled: Schema.boolean().default(true),
   dataDir: Schema.string().default(''),
-  source: Schema.union(['auto', 'prime', 'palace']).default('auto'),
+  source: Schema.union(['auto', 'prime', 'dsh-memory', 'palace']).default('auto'),
   rebuild: Schema.object({
     enabled: Schema.boolean().default(true),
     maxResults: Schema.number().min(1).max(20).default(5),

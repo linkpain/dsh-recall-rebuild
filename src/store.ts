@@ -349,22 +349,163 @@ export function openPalaceStore(cwd: string, logger: LoggerLike): MemoryStore {
   };
 }
 
-/** 记忆来源路由:auto 探测 prime → palace,或按 source 显式指定。 */
+/* ── @max-null/dsh-memory(JSON 文件)适配器 ─────────────────────
+ * dsh-memory 的存储是「人类可读 JSON 记忆库」(storage-hub 格式):
+ * - global:<DSH_HOME>/storages/memory.json(缺省 ~/.dsh/storages/memory.json,跨项目)
+ * - project:<cwd>/.dsh/storages/<backend>.json(跟随工作区,随 git 分享)
+ * 文件顶层:{ "unit": { "name", "tables": { "blocks": [ ... ] } } }
+ * 记录字段:id/namespace/status/injected/quarantined/content/keywords/createdAt/updatedAt/kind。
+ * 生效规则(与 dsh-memory 一致):status==='approved' 且未隔离(quarantined!==true);
+ * kind==='prompt' 是提示词模板索引,不是用户记忆,跳过。
+ * 检索:content 归一化子串 + keywords 加权(keywords 命中权重更高)。
+ * 只读,绝不写文件。 */
+
+interface DshMemoryEntry {
+  id: string;        // 记录 id(文件内唯一)
+  content: string;
+  namespace: 'global' | 'project';
+  keywords: string[];
+  updatedAt: number; // epoch ms
+  rel: string;       // 文件展示标签
+}
+
+/** epoch ms → 本地时区 YYYY-MM-DD;非法值返回空串。 */
+function epochToDate(ms: number): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '';
+  const d = new Date(ms);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+/** 解析单个 dsh-memory JSON 库文件为生效记录(只读;跳过 suggested/隔离/prompt/结构异常)。 */
+function parseDshMemoryFile(file: string, rel: string): DshMemoryEntry[] {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return [];
+  }
+  const blocks = (doc as { unit?: { tables?: { blocks?: unknown } } } | null)?.unit?.tables?.blocks;
+  if (!Array.isArray(blocks)) return [];
+  const out: DshMemoryEntry[] = [];
+  for (const raw of blocks) {
+    const b = raw as {
+      id?: unknown;
+      namespace?: unknown;
+      status?: unknown;
+      quarantined?: unknown;
+      kind?: unknown;
+      content?: unknown;
+      keywords?: unknown;
+      updatedAt?: unknown;
+    };
+    if (!b || typeof b !== 'object') continue;
+    if (b.status !== 'approved') continue; // suggested 未生效
+    if (b.quarantined === true) continue;  // 隔离记录不进检索
+    if (b.kind === 'prompt') continue;     // 模板索引非用户记忆
+    const content = typeof b.content === 'string' ? b.content.trim() : '';
+    if (!content) continue;
+    out.push({
+      id: typeof b.id === 'string' ? b.id : '',
+      content,
+      namespace: b.namespace === 'project' ? 'project' : 'global',
+      keywords: Array.isArray(b.keywords) ? b.keywords.filter((k) => typeof k === 'string') : [],
+      updatedAt: typeof b.updatedAt === 'number' ? b.updatedAt : 0,
+      rel,
+    });
+  }
+  return out;
+}
+
+/**
+ * 打开 @max-null/dsh-memory 的只读记忆源。
+ * @param cwd DSH 工作目录(用于定位 project 记忆)
+ */
+export function openDshMemoryStore(cwd: string, logger: LoggerLike): MemoryStore {
+  // global:join(DSH_HOME ?? ~/.dsh, 'storages', 'memory.json')
+  const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+  const globalFile = path.join(home, 'storages', 'memory.json');
+  // project:<cwd>/.dsh/storages/*.json(每个 backend 一个文件)
+  const projectDir = path.join(cwd, '.dsh', 'storages');
+
+  const entries: DshMemoryEntry[] = [];
+  if (fs.existsSync(globalFile)) {
+    entries.push(...parseDshMemoryFile(globalFile, '<DSH_HOME>/storages/memory.json'));
+  }
+  let projectNames: string[] = [];
+  try {
+    projectNames = fs.readdirSync(projectDir).filter((n) => n.endsWith('.json'));
+  } catch {
+    /* 无 project 记忆 */
+  }
+  for (const n of projectNames) {
+    if (n === 'query-log.json') continue; // 查询日志非记忆库
+    const f = path.join(projectDir, n);
+    entries.push(...parseDshMemoryFile(f, `<cwd>/.dsh/storages/${n}`));
+  }
+  if (entries.length === 0) {
+    logger.warn(
+      `[recall-rebuild] 未找到 dsh-memory 记忆文件(检查 <DSH_HOME>/storages/memory.json 或 ` +
+        `<cwd>/.dsh/storages/*.json),记忆读取停用`,
+    );
+    return disabledStore('未找到 dsh-memory 记忆文件');
+  }
+  const sources = [...new Set(entries.map((e) => e.rel))];
+  return {
+    ok: true,
+    label: `@max-null/dsh-memory (${sources.join(', ')})`,
+    search(query: string, limit: number): MemoryRecord[] {
+      const words = tokenizeQuery(query);
+      if (words.length === 0) return [];
+      const scored: Array<{ e: DshMemoryEntry; hits: number }> = [];
+      for (const e of entries) {
+        const cNorm = palaceNorm(e.content);
+        let hits = 0;
+        for (const w of words) {
+          if (cNorm.includes(w)) hits += 1;
+          // keywords 命中更精准,权重 ×2
+          for (const k of e.keywords) if (palaceNorm(k).includes(w)) hits += 2;
+        }
+        if (hits > 0) scored.push({ e, hits });
+      }
+      // 命中权重优先,其次更新时间倒序(最近优先)
+      scored.sort((a, b) => b.hits - a.hits || (a.e.updatedAt < b.e.updatedAt ? 1 : a.e.updatedAt > b.e.updatedAt ? -1 : 0));
+      return scored.slice(0, limit).map(({ e, hits }) => ({
+        id: `${e.rel}#${e.id}`,
+        content: e.content,
+        type: 'dsh-memory',
+        sceneName: e.namespace === 'project' ? 'project 记忆' : 'global 记忆',
+        family: e.rel,
+        priority: hits,
+        timestampStr: epochToDate(e.updatedAt),
+      }));
+    },
+    close(): void {
+      /* 无资源 */
+    },
+  };
+}
+
+/** 记忆来源路由:auto 探测 prime → dsh-memory → palace,或按 source 显式指定。 */
 export function openMemorySource(
-  source: 'auto' | 'prime' | 'palace',
+  source: 'auto' | 'prime' | 'dsh-memory' | 'palace',
   opts: { dataDir: string; cwd: string; logger: LoggerLike },
 ): MemoryStore {
   const { dataDir, cwd, logger } = opts;
   if (source === 'prime') return openPrimeMemoryStore(dataDir, logger);
+  if (source === 'dsh-memory') return openDshMemoryStore(cwd, logger);
   if (source === 'palace') return openPalaceStore(cwd, logger);
-  // auto:prime-memory 库存在则优先(打开失败再落 palace),否则尝试 palace
+  // auto:prime-memory 库存在则优先(打开失败依次落 dsh-memory / palace),否则尝试后两者
   const primeDb = path.join(dataDir, 'memory.db');
   if (fs.existsSync(primeDb)) {
     const s = openPrimeMemoryStore(dataDir, logger);
     if (s.ok) return s;
-    logger.warn(`[recall-rebuild] prime-memory 库存在但打不开,尝试 memory-palace 记忆源`);
+    logger.warn(`[recall-rebuild] prime-memory 库存在但打不开,尝试 dsh-memory / memory-palace 记忆源`);
   }
+  const dm = openDshMemoryStore(cwd, logger);
+  if (dm.ok) return dm;
   const p = openPalaceStore(cwd, logger);
   if (p.ok) return p;
-  return disabledStore('未检测到 prime-memory 或 memory-palace 记忆库');
+  return disabledStore('未检测到 prime-memory / dsh-memory / memory-palace 记忆库');
 }
