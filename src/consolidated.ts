@@ -110,7 +110,22 @@ export function clusterize(
   return clusters;
 }
 
-/** 遗忘判定:置信度过低 + 长期未命中 → dormant。 */
+/** 反复被命中的条目不再遗忘(用过的记忆越用越稳)。 */
+const PIN_TOUCH_COUNT = 3;
+
+/**
+ * 遗忘判定:置信度过低 **且** 长期未命中 → dormant。
+ *
+ * 两个条件必须同时成立,顺序也就有讲究:
+ * 1. 先看置信度 —— 高置信的稳定记忆永不遗忘(用户明确表达过的偏好不能说没就没);
+ * 2. 再看活跃度 —— 最近 dormantDays 天内命中过就继续保留;
+ * 3. 最后看使用强度 —— 命中过 PIN_TOUCH_COUNT 次以上的条目视为「用过」,不过期。
+ *
+ * 之前这套判定是死代码:consolidate.calcConfidence 的下限让 confidence 恒 ≥ 0.6,
+ * 而默认 confidenceThreshold 是 0.4,第一条分支永远 return false,遗忘从未发生。
+ * 修在源头(calcConfidence 允许落到阈值以下)而不是在这里放宽条件,这样
+ * 「低置信」仍然真实反映「这条记忆只被单次观察支撑」。
+ */
 export function isDormant(
   m: ConsolidatedMemory,
   now: number,
@@ -118,7 +133,7 @@ export function isDormant(
 ): boolean {
   if (m.status === 'dormant') return true;
   if (m.confidence >= opts.confidenceThreshold) return false;
-  if (m.touchCount >= 3) return false;
+  if (m.touchCount >= PIN_TOUCH_COUNT) return false;
   const last = m.lastRecalledAt ?? m.createdAt;
   return now - last > opts.dormantDays * DAY_MS;
 }
@@ -199,18 +214,40 @@ export class ConsolidatedStore {
 
   /** 新增或合并条目(同 id 更新)。 */
   upsert(m: ConsolidatedMemory): void {
-    this.memories.set(m.id, m);
+    this.upsertMany([m]);
+  }
+
+  /** 批量新增/合并:一次落盘(一轮巩固产出多条时避免逐条全量重写)。 */
+  upsertMany(items: ConsolidatedMemory[]): void {
+    if (items.length === 0) return;
+    for (const m of items) this.memories.set(m.id, m);
     this.writeJson(this.files.memories, [...this.memories.values()]);
   }
 
   /** 命中一次:计数 +1、更新 lastRecalledAt;同时按遗忘规则降权。 */
   touch(id: string, now: number, opts: { confidenceThreshold: number; dormantDays: number }): void {
-    const m = this.memories.get(id);
-    if (!m) return;
-    m.touchCount += 1;
-    m.lastRecalledAt = now;
-    if (isDormant(m, now, opts)) m.status = 'dormant';
-    this.writeJson(this.files.memories, [...this.memories.values()]);
+    this.touchMany([id], now, opts);
+  }
+
+  /**
+   * 批量命中:同一轮召回里命中的所有条目**只落盘一次**。
+   *
+   * 原先 mergeConsolidated 对每条 active 条目单独 touch,而 touch 每次都把整份
+   * memories.json 重写一遍 —— 一轮召回 N 条记忆就写 N 次全量 JSON(写放大),
+   * 在记忆库大的机器上是明显的 IO 抖动。批量写把 N 次降到 1 次,语义完全不变。
+   */
+  touchMany(ids: string[], now: number, opts: { confidenceThreshold: number; dormantDays: number }): number {
+    let changed = 0;
+    for (const id of ids) {
+      const m = this.memories.get(id);
+      if (!m) continue;
+      m.touchCount += 1;
+      m.lastRecalledAt = now;
+      if (isDormant(m, now, opts)) m.status = 'dormant';
+      changed += 1;
+    }
+    if (changed > 0) this.writeJson(this.files.memories, [...this.memories.values()]);
+    return changed;
   }
 
   /** 用户主动删除:物理移除条目及全部联想边(与被动遗忘不同,这是显式操作)。 */
@@ -229,12 +266,21 @@ export class ConsolidatedStore {
 
   /** 联想扩散:给一对条目加关联边(weight 累加)。 */
   addLink(a: string, b: string, label: string): void {
-    if (a === b) return;
-    if (!this.links[a]) this.links[a] = {};
-    const edge = this.links[a][b];
-    if (edge) edge.weight += 1;
-    else this.links[a][b] = { weight: 1, label };
-    this.writeJson(this.files.links, this.links);
+    this.addLinks([[a, b]], label);
+  }
+
+  /** 批量加边:只落盘一次(同轮巩固的 n 条产出会形成 n²/2 对边)。 */
+  addLinks(pairs: [string, string][], label: string): void {
+    let changed = 0;
+    for (const [a, b] of pairs) {
+      if (!a || !b || a === b) continue;
+      if (!this.links[a]) this.links[a] = {};
+      const edge = this.links[a][b];
+      if (edge) edge.weight += 1;
+      else this.links[a][b] = { weight: 1, label };
+      changed += 1;
+    }
+    if (changed > 0) this.writeJson(this.files.links, this.links);
   }
 
   /** 取某条目的强关联(weight ≥ minWeight),按权重降序。 */
@@ -267,9 +313,19 @@ export class ConsolidatedStore {
     this.writeJson(this.files.pending, cur);
   }
 
-  /** 清空 pending(巩固完成/放弃)。 */
-  clearPending(): void {
-    this.writeJson(this.files.pending, []);
+  /**
+   * 清空 pending(巩固完成/放弃)。
+   * @param doneIds 若给出,只移除这些 id(本轮实际处理过的碎片),其余保留待下次;
+   *                省略则整份清空。
+   */
+  clearPending(doneIds?: string[]): void {
+    if (!doneIds) {
+      this.writeJson(this.files.pending, []);
+      return;
+    }
+    const done = new Set(doneIds);
+    const rest = this.pending().filter((p) => !done.has(p.id));
+    this.writeJson(this.files.pending, rest);
   }
 
   /** 更新 meta(lastRunAt/runCount)。 */

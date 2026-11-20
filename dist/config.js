@@ -9,7 +9,7 @@ import Schema from '@deepseek-ai/schemastery';
 export const recallRebuildSchema = Schema.object({
     enabled: Schema.boolean().default(true),
     dataDir: Schema.string().default(''),
-    source: Schema.union(['auto', 'prime']).default('auto'),
+    source: Schema.union(['auto', 'prime', 'dsh-memory', 'palace']).default('auto'),
     rebuild: Schema.object({
         enabled: Schema.boolean().default(true),
         maxResults: Schema.number().min(1).max(20).default(5),
@@ -28,5 +28,36 @@ export const recallRebuildSchema = Schema.object({
     query: Schema.object({
         tailMessages: Schema.number().min(1).max(30).default(8),
         maxChars: Schema.number().min(100).max(4000).default(1200),
+    }).default({}),
+    user: Schema.object({
+        isolation: Schema.union(['off', 'auto', 'strict']).default('auto'),
+        isolationDir: Schema.string().default(''),
+        sourceTagPattern: Schema.string().default(''),
+    }).default({}),
+    observability: Schema.object({
+        logEnabled: Schema.boolean().default(true),
+        logDir: Schema.string().default(''),
+        includeFragments: Schema.boolean().default(true),
+        statsEnabled: Schema.boolean().default(true),
+    }).default({}),
+    consolidate: Schema.object({
+        enabled: Schema.boolean().default(true),
+        dir: Schema.string().default(''),
+        minFragments: Schema.number().min(5).max(200).default(20),
+        minIntervalMs: Schema.number().min(60000).max(86400000 * 7).default(21600000),
+        checkIntervalMs: Schema.number().min(60000).max(86400000).default(3600000),
+        maxFragmentsPerRun: Schema.number().min(10).max(200).default(50),
+        clusterThreshold: Schema.number().min(0.05).max(0.9).default(0.25),
+        maxCluster: Schema.number().min(2).max(20).default(8),
+        maxOutputChars: Schema.number().min(40).max(2000).default(400),
+        temperature: Schema.number().min(0).max(1.5).default(0.4),
+        maxTokens: Schema.number().min(64).max(4096).default(1024),
+        timeoutMs: Schema.number().min(1000).max(120000).default(20000),
+        confidenceThreshold: Schema.number().min(0.1).max(0.9).default(0.4),
+        dormantDays: Schema.number().min(3).max(365).default(30),
+    }).default({}),
+    commands: Schema.object({
+        enabled: Schema.boolean().default(true),
+        name: Schema.string().default('recall-rebuild'),
     }).default({}),
 }).default({});

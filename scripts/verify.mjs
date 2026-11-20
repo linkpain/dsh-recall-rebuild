@@ -43,8 +43,16 @@ check('Config commands 默认开启', cfg.commands.enabled === true && cfg.comma
 
 // ── 2. store 适配器真实检索 ──────────────────────────────────
 console.log('[2] store 适配器(临时 SQLite 库)');
-const { openPrimeMemoryStore, sanitizeFts } = await import(`${distUrl}store.js`);
-check('sanitizeFts 清洗特殊字符', sanitizeFts('咖啡 AND OR "冰美式"') === '"咖啡" AND "冰美式"');
+const { openPrimeMemoryStore, sanitizeFts, tokenizeQuery } = await import(`${distUrl}store.js`);
+// 分词语义已改为「拉丁词 + 中文 2-gram」:中文不再是整句一个词元,
+// 因此 3 字词「冰美式」会展开为 冰美/美式;AND/OR 作为停用词被剔除。
+check('sanitizeFts 清洗特殊字符', sanitizeFts('咖啡 AND OR "冰美式"') === '"咖啡" AND "冰美" AND "美式"');
+check('sanitizeFts 空查询 → 空串', sanitizeFts('   ') === '');
+check('sanitizeFts 运算符词不进入 MATCH', sanitizeFts('OR NOT AND NEAR') === '');
+check('tokenizeQuery 中文切 2-gram', tokenizeQuery('冰美式咖啡').join(',') === '冰美,美式,式咖,咖啡');
+check('tokenizeQuery 中文过滤高频虚词', tokenizeQuery('用户喜欢什么').every((t) => t !== '用户' && t !== '什么'));
+check('tokenizeQuery 中英混排各自成词', tokenizeQuery('咖啡Starbucks拿铁').includes('starbucks'));
+check('tokenizeQuery 去重', tokenizeQuery('咖啡 咖啡').join(',') === '咖啡');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-verify-'));
 const dbPath = path.join(tmpDir, 'memory.db');
@@ -416,6 +424,76 @@ check('cmd:remove 清联想边',
   cstore.remove('a2') === true && cstore.strongLinks('b1', 1, 5).length === 0 && cstore.strongLinks('a2', 1, 5).length === 0);
 check('cmd:remove 不存在返回 false', cstore.remove('nope') === false);
 fs.rmSync(cmdDir, { recursive: true, force: true });
+
+// ── 2h. 时效衰减(排序分) ───────────────────────────────────────
+console.log('[2h] 时效衰减');
+const { decayFactor, DECAY_FLOOR, DECAY_HALF_LIFE_DAYS } = await import(`${distUrl}store.js`);
+const NOW = Date.parse('2026-11-19T00:00:00Z');
+const iso = (daysAgo) => new Date(NOW - daysAgo * 86400000).toISOString().slice(0, 10);
+check('decay:今天的记忆系数为 1', decayFactor(iso(0), NOW) === 1);
+check('decay:半衰期当天约 0.5', Math.abs(decayFactor(iso(DECAY_HALF_LIFE_DAYS), NOW) - 0.5) < 0.02);
+check('decay:老记忆不沉底(守住 floor)', decayFactor(iso(3650), NOW) === DECAY_FLOOR);
+check('decay:时间缺失不惩罚', decayFactor('', NOW) === 1 && decayFactor('不是日期', NOW) === 1);
+check('decay:未来时间不倒扣', decayFactor(iso(-30), NOW) === 1);
+check('decay:越新分越高', decayFactor(iso(1), NOW) > decayFactor(iso(90), NOW));
+
+// ── 2i. 多路融合(RRF)与排序出口 ─────────────────────────────
+console.log('[2i] 多路融合与排序');
+const { fuseRanked, rankMemories, RRF_K } = await import(`${distUrl}store.js`);
+const mkm = (id, priority, timestampStr = '') => ({
+  id, content: id, type: 't', sceneName: '', family: '', priority, timestampStr,
+});
+// 两路都排了 a/b,顺序相反:c 只在第二路出现且名次靠前
+const fused = fuseRanked(
+  [[mkm('a', 5), mkm('b', 3)], [mkm('b', 3), mkm('c', 1), mkm('a', 5)]],
+  10,
+);
+check('rrf:K 取论文值 60', RRF_K === 60);
+check('rrf:两路都命中的 b 排第一', fused[0].id === 'b');
+check('rrf:去重(3 条不重复)', fused.length === 3 && new Set(fused.map((m) => m.id)).size === 3);
+check('rrf:单路结果保持原序', fuseRanked([[mkm('x', 1), mkm('y', 2)]], 10).map((m) => m.id).join(',') === 'x,y');
+check('rrf:空输入安全', fuseRanked([], 10).length === 0 && fuseRanked([[]], 10).length === 0);
+check('rrf:limit 生效', fuseRanked([[mkm('a', 1), mkm('b', 2), mkm('c', 3)]], 2).length === 2);
+check('rrf:无 id 记录被丢弃', fuseRanked([[{ ...mkm('', 9) }]], 5).length === 0);
+
+const RANK_NOW = Date.parse('2026-11-19T00:00:00Z');
+const day = (n) => new Date(RANK_NOW - n * 86400000).toISOString().slice(0, 10);
+check('rank:同分下新记忆优先',
+  rankMemories([mkm('old', 5, day(300)), mkm('new', 5, day(0))], 2, RANK_NOW)[0].id === 'new');
+check('rank:衰减不足以翻转量级差',
+  rankMemories([mkm('oldHigh', 10, day(300)), mkm('newLow', 1, day(0))], 2, RANK_NOW)[0].id === 'oldHigh');
+check('rank:limit 截断', rankMemories([mkm('a', 1), mkm('b', 2), mkm('c', 3)], 2, RANK_NOW).length === 2);
+check('rank:不改动入参数组', (() => {
+  const src = [mkm('a', 1, day(9)), mkm('b', 9, day(0))];
+  const before = src.map((m) => m.id).join(',');
+  rankMemories(src, 2, RANK_NOW);
+  return src.map((m) => m.id).join(',') === before;
+})());
+
+// ── 2j. 跨轮去重(同一 agent 内降权) ─────────────────────────
+console.log('[2j] 跨轮去重');
+const { rememberInjected, demoteRecentlyInjected, resetRecentInjection, DEDUPE_TTL_MS } =
+  await import(`${distUrl}recall.js`);
+const T0 = 1_700_000_000_000;
+const three = [mkm('m1', 9), mkm('m2', 8), mkm('m3', 7)];
+resetRecentInjection();
+check('dedupe:未注入时顺序不变',
+  demoteRecentlyInjected(three, 'ag1', T0).map((m) => m.id).join(',') === 'm1,m2,m3');
+rememberInjected('ag1', ['m1'], T0);
+check('dedupe:已注入的降到末尾但不丢弃',
+  demoteRecentlyInjected(three, 'ag1', T0 + 1000).map((m) => m.id).join(',') === 'm2,m3,m1');
+check('dedupe:窗口过期后恢复原序',
+  demoteRecentlyInjected(three, 'ag1', T0 + DEDUPE_TTL_MS + 1).map((m) => m.id).join(',') === 'm1,m2,m3');
+check('dedupe:不同 agent 互不影响',
+  demoteRecentlyInjected(three, 'ag2', T0 + 1000).map((m) => m.id).join(',') === 'm1,m2,m3');
+check('dedupe:空 agentKey 不做任何事',
+  demoteRecentlyInjected(three, '', T0 + 1000).map((m) => m.id).join(',') === 'm1,m2,m3');
+rememberInjected('ag1', ['m1'], T0);
+rememberInjected('ag1', [], T0);
+check('dedupe:空 id 列表不写入', demoteRecentlyInjected(three, 'ag9', T0).length === 3);
+resetRecentInjection();
+check('dedupe:reset 清空状态',
+  demoteRecentlyInjected(three, 'ag1', T0 + 1000).map((m) => m.id).join(',') === 'm1,m2,m3');
 
 // ── 3. 重建引擎纯逻辑(不实际调用 LLM) ───────────────────────
 console.log('[3] rebuild 碎片组装预算');

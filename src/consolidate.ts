@@ -42,9 +42,16 @@ function unifyUserKey(frags: { userKey: string | null }[]): string | null {
   return keys.size === 1 ? (Array.from(keys)[0] ?? null) : null;
 }
 
-/** 置信度:来源碎片越多越稳(0.5 起,每多 1 条 +0.1,封顶 0.9)。 */
+/**
+ * 置信度:来源碎片越多越稳(0.25 起,每多 1 条 +0.1,封顶 0.9)。
+ *
+ * 起点必须低于默认 confidenceThreshold(0.4):否则「只被单次观察支撑」的条目
+ * 一开始就 ≥0.6,isDormant 的第一条分支永远命中,遗忘扫描成为死代码。
+ * 现在的语义是:1 条碎片 → 0.35(脆弱,长期不再被想起就会休眠),
+ * 2 条 → 0.45(过线,稳定),碎片越多越稳。
+ */
 function calcConfidence(fragmentCount: number): number {
-  return Math.min(0.9, 0.5 + fragmentCount * 0.1);
+  return Math.min(0.9, 0.25 + fragmentCount * 0.1);
 }
 
 async function consolidateText(
@@ -52,6 +59,7 @@ async function consolidateText(
   route: { provider: string; model: string },
   frags: string[],
   opts: ConsolidateOptions,
+  signal: AbortSignal,
 ): Promise<string> {
   const stream = (ctx as unknown as { llm: { stream(o: Record<string, unknown>): unknown } }).llm.stream({
     provider: route.provider,
@@ -65,6 +73,7 @@ async function consolidateText(
     ],
     temperature: opts.temperature,
     maxTokens: opts.maxTokens,
+    signal,
   });
   let text = '';
   for await (const chunk of stream as AsyncIterable<{ type?: string; text?: unknown }>) {
@@ -126,10 +135,12 @@ export async function runConsolidation(
     if (frags.length === 0) continue;
     let text: string;
     try {
+      // 超时必须真的传到 llm.stream:此前 ac.abort() 没人监听,定时器形同虚设,
+      // 一次卡住的巩固会一直挂到宿主退出。
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), opts.timeoutMs);
       try {
-        text = await consolidateText(ctx, route, frags.map((f) => f.content), opts);
+        text = await consolidateText(ctx, route, frags.map((f) => f.content), opts, ac.signal);
       } finally {
         clearTimeout(timer);
       }
@@ -143,9 +154,11 @@ export async function runConsolidation(
     if (parsed.length === 0) continue;
     const userKey = unifyUserKey(frags);
     const sourceIds = frags.map((f) => f.id);
+    // 同一簇的多条产出先攒起来,循环后一次性落盘(避免逐条全量重写 memories.json)
+    const fresh: Parameters<ConsolidatedStore['upsertMany']>[0] = [];
     for (const p of parsed) {
       const id = `c_${now}_${Math.random().toString(36).slice(2, 8)}`;
-      consolidated.upsert({
+      fresh.push({
         id,
         userKey,
         type: p.type as ConsolidatedType,
@@ -160,16 +173,19 @@ export async function runConsolidation(
       producedIds.push(id);
       produced = true;
     }
+    consolidated.upsertMany(fresh);
   }
   // 联想扩散:本轮产出的条目两两建立「同轮巩固」关联边(后续召回可顺带想起)
+  const pairs: [string, string][] = [];
   for (let i = 0; i < producedIds.length; i++) {
     for (let j = i + 1; j < producedIds.length; j++) {
       const a = producedIds[i];
       const b = producedIds[j];
       if (!a || !b) continue;
-      consolidated.addLink(a, b, '同轮巩固');
+      pairs.push([a, b]);
     }
   }
+  consolidated.addLinks(pairs, '同轮巩固');
   // 遗忘扫描:低置信 + 长期未命中 → dormant(召回降权,不删除)
   const forgetOpts = { confidenceThreshold: opts.confidenceThreshold, dormantDays: opts.dormantDays };
   let decayed = 0;
@@ -180,7 +196,9 @@ export async function runConsolidation(
       decayed += 1;
     }
   }
-  consolidated.clearPending();
+  // 只清掉本轮真正处理过的碎片:原先无差别 clearPending 会把超出
+  // maxFragmentsPerRun 的旧碎片一并丢掉(它们既没被巩固,也没机会重试)。
+  consolidated.clearPending(items.map((p) => p.id));
   consolidated.markRun(now);
   consolidated.saveAll();
   logger.info(

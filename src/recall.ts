@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { RecallRebuildConfig } from './config.js';
 import { rebuildMemory } from './rebuild.js';
+import { decayFactor } from './store.js';
 import type { LoggerLike, MemoryRecord, MemoryStore } from './store.js';
 import { extractUserKey, type NamespaceStore } from './namespace.js';
 import type { RebuildLogger } from './observability.js';
@@ -81,6 +82,58 @@ function buildRecallQuery(messages: MsgLike[] | undefined, cfg: RecallRebuildCon
   return texts.join(' ').trim();
 }
 
+/* ── 跨轮去重(退化实现) ───────────────────────────────────
+ * 理想做法是「同一会话内,上一轮注入过的记忆片段下一轮不再重复注入」。
+ * 但 agent/pre-step 的 payload 里没有 sessionId(只有 agent.id),拿不到会话边界。
+ * 于是退化为「同一 agent.id 内、TTL 窗口内注入过的记忆降权」:
+ * 不丢弃(它可能仍是本轮最相关的),只是让位给新候选 —— 重复注入的本质伤害是
+ * 每轮都刷同一段回忆,把上下文预算烧在已经说过的话上。 */
+
+/** 去重窗口:超过这个时长的注入记录视为过期(记忆本身没变,但场景大概率变了)。 */
+export const DEDUPE_TTL_MS = 30 * 60_000;
+
+/** agent.id → (记忆 id → 注入时间)。无 sessionId 可用时的最小作用域。 */
+const recentInjected = new Map<string, Map<string, number>>();
+
+/** 清空去重状态(仅测试用)。 */
+export function resetRecentInjection(): void {
+  recentInjected.clear();
+}
+
+/** 记录本轮真正注入的记忆 id。 */
+export function rememberInjected(agentKey: string, ids: string[], now: number): void {
+  if (!agentKey || ids.length === 0) return;
+  let bucket = recentInjected.get(agentKey);
+  if (!bucket) {
+    bucket = new Map<string, number>();
+    recentInjected.set(agentKey, bucket);
+  }
+  for (const id of ids) if (id) bucket.set(id, now);
+  // 顺手清理过期项,避免长时间运行后无界增长
+  for (const [id, at] of bucket) if (now - at > DEDUPE_TTL_MS) bucket.delete(id);
+  if (bucket.size === 0) recentInjected.delete(agentKey);
+}
+
+/**
+ * 把「窗口内已注入过」的候选降到末尾(稳定排序,其余相对顺序不变)。
+ * 不删除:若本轮只有这些候选,仍然要注入,只是不再抢占头部位置。
+ */
+export function demoteRecentlyInjected(
+  memories: MemoryRecord[],
+  agentKey: string,
+  now: number,
+): MemoryRecord[] {
+  const bucket = agentKey ? recentInjected.get(agentKey) : undefined;
+  if (!bucket || bucket.size === 0) return memories;
+  const fresh: MemoryRecord[] = [];
+  const stale: MemoryRecord[] = [];
+  for (const m of memories) {
+    const at = bucket.get(m.id);
+    (at !== undefined && now - at <= DEDUPE_TTL_MS ? stale : fresh).push(m);
+  }
+  return stale.length === 0 ? memories : [...fresh, ...stale];
+}
+
 /** 构造重建片段注入消息(source.kind 用 v4 语义,避免被当作"用户消息"捕获/再次蒸馏)。 */
 function buildInjectionMessage(
   text: string,
@@ -119,11 +172,13 @@ function mergeConsolidated(
       dormantDays: cfg.consolidate.dormantDays,
     };
     const extra: MemoryRecord[] = [];
+    // 本轮命中的巩固条目 id:收集起来一次性落盘(见 ConsolidatedStore.touchMany)
+    const touched: string[] = [];
     for (const m of consolidated.list()) {
       if (m.status !== 'active') continue;
       if (m.userKey !== null && m.userKey !== userKey) continue; // 归属他人(当前用户存在时)
       if (cfg.user.isolation === 'strict' && m.userKey === null && userKey !== null) continue;
-      consolidated.touch(m.id, now, forgetOpts);
+      touched.push(m.id);
       extra.push({
         id: m.id,
         content: m.content,
@@ -149,9 +204,12 @@ function mergeConsolidated(
         });
       }
     }
-    // 高置信优先:排序后取合并预算(底层碎片 + 巩固层 ≤ maxResults * 2)
+    // 一次写入代替「每条一次全量 JSON 重写」
+    if (touched.length > 0) consolidated.touchMany(touched, now, forgetOpts);
+    // 排序分 = 基础优先级 × 时效衰减系数(老记忆最多损失一半分,永不沉底)
+    const score = (m: MemoryRecord): number => m.priority * decayFactor(m.timestampStr, now);
     return [...memories, ...extra]
-      .sort((a, b) => b.priority - a.priority)
+      .sort((a, b) => score(b) - score(a))
       .slice(0, cfg.rebuild.maxResults * 2);
   } catch (err) {
     logger.warn(
@@ -209,13 +267,6 @@ export function registerRecallRebuild(
           injection: 'none' as const,
           latencyMs: Date.now() - startedAt,
         });
-        // 睡眠巩固层:累积本轮命中碎片(供离线巩固)
-        if (consolidated) {
-          consolidated.addPending(
-            memories.map((m) => ({ id: m.id, content: m.content, userKey })),
-            cfg.consolidate.maxFragmentsPerRun,
-          );
-        }
         if (memories.length === 0) {
           if (obsLog) obsLog.log({ ...logBase() });
           return decision;
@@ -230,16 +281,30 @@ export function registerRecallRebuild(
           // 只把"本轮实际保留"的候选记为当前用户归属(无主记忆随命中归位)
           namespaces.recordHits(userKey, memories);
         }
+        // 睡眠巩固层:累积本轮**通过隔离后**命中的碎片(供离线巩固)。
+        // 必须在隔离过滤之后:否则 A 用户命中的碎片会以 userKey=null 落进 pending,
+        // 巩固成条目后对所有用户可见 —— 跨用户记忆污染。
+        if (consolidated) {
+          consolidated.addPending(
+            memories.map((m) => ({ id: m.id, content: m.content, userKey })),
+            cfg.consolidate.maxFragmentsPerRun,
+          );
+        }
         // 睡眠巩固层召回:高置信稳定记忆优先,联想扩散附加强关联主题
         if (consolidated) {
           memories = mergeConsolidated(memories, consolidated, userKey, cfg, logger);
         }
+        // 跨轮去重:刚注入过的候选让位(不丢弃),避免每轮都刷同一段回忆
+        const agentKey = payload.agent?.id ?? '';
+        memories = demoteRecentlyInjected(memories, agentKey, Date.now());
         const rebuilt = await rebuildMemory(ctx, memories, query, cfg.rebuild, payload.signal, logger);
         if (!rebuilt || !rebuilt.text) {
           if (obsLog) obsLog.log({ ...logBase(), error: '重建返回空,跳过注入' });
           return decision;
         }
         const injection = buildInjectionMessage(rebuilt.text, rebuilt.sourceIds, cfg);
+        // 记下本轮真正被重建进提示词的记忆,下一轮(同 agent)降权
+        rememberInjected(agentKey, rebuilt.sourceIds, Date.now());
         let injectionKind: 'replaced' | 'appended' | 'none' = 'appended';
         if (cfg.inject.strategy === 'replace') {
           const idx = decision.messages.findIndex(isOtherPluginRecall);

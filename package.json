@@ -1,6 +1,6 @@
 {
   "name": "dsh-recall-rebuild",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public",
@@ -32,6 +32,9 @@
   "scripts": {
     "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node scripts/verify.mjs",
+    "test:eval": "node scripts/eval-recall.mjs",
+    "test:all": "npm run test && npm run test:eval",
     "prepack": "npm run build"
   },
   "engines": {

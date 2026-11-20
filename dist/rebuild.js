@@ -1,4 +1,6 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+/** 超预算截断时追加的引流后缀(见 rebuildMemory 里的截断处)。 */
+const TRUNCATE_HINT = '…(已截断)';
 const REBUILD_SYSTEM = `你是长期记忆重建器,服务于一位用户的日常对话助手。
 
 现在,当前对话触发了对过往记忆的回忆,下面给出一批从记忆库检索到的真实记忆碎片。
@@ -86,9 +88,14 @@ export async function rebuildMemory(ctx, memories, query, opts, signal, logger) 
     const timer = setTimeout(() => ac.abort(), opts.timeoutMs);
     try {
         const text = await streamText(ctx, route, REBUILD_SYSTEM, user, opts, ac.signal);
-        const trimmed = (text ?? '').trim().slice(0, opts.maxOutputChars);
-        if (!trimmed)
+        const raw = (text ?? '').trim();
+        if (!raw)
             return undefined;
+        // 截断要「引流」而不是「损失」:告诉调用方后面还有,以及去哪看全文。
+        // 硬 slice 会让模型以为记忆本身就这么短,反而更容易编造缺失的细节。
+        const trimmed = raw.length > opts.maxOutputChars
+            ? `${raw.slice(0, Math.max(1, opts.maxOutputChars - TRUNCATE_HINT.length))}${TRUNCATE_HINT}`
+            : raw;
         return { text: trimmed, sourceIds: memories.map((m) => m.id) };
     }
     catch (err) {

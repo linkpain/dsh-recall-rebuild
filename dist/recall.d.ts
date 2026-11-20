@@ -14,7 +14,10 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { RecallRebuildConfig } from './config.js';
-import type { LoggerLike, MemoryStore } from './store.js';
+import type { LoggerLike, MemoryRecord, MemoryStore } from './store.js';
+import { type NamespaceStore } from './namespace.js';
+import type { RebuildLogger } from './observability.js';
+import type { ConsolidatedStore } from './consolidated.js';
 interface MsgLike {
     source?: {
         kind?: string;
@@ -25,5 +28,16 @@ interface MsgLike {
 }
 /** 判断一条消息是否为其它插件(prime-memory 等)注入的原文召回。 */
 export declare function isOtherPluginRecall(m: MsgLike): boolean;
-export declare function registerRecallRebuild(ctx: Context, store: MemoryStore, cfg: RecallRebuildConfig, logger: LoggerLike): void;
+/** 去重窗口:超过这个时长的注入记录视为过期(记忆本身没变,但场景大概率变了)。 */
+export declare const DEDUPE_TTL_MS: number;
+/** 清空去重状态(仅测试用)。 */
+export declare function resetRecentInjection(): void;
+/** 记录本轮真正注入的记忆 id。 */
+export declare function rememberInjected(agentKey: string, ids: string[], now: number): void;
+/**
+ * 把「窗口内已注入过」的候选降到末尾(稳定排序,其余相对顺序不变)。
+ * 不删除:若本轮只有这些候选,仍然要注入,只是不再抢占头部位置。
+ */
+export declare function demoteRecentlyInjected(memories: MemoryRecord[], agentKey: string, now: number): MemoryRecord[];
+export declare function registerRecallRebuild(ctx: Context, store: MemoryStore, cfg: RecallRebuildConfig, logger: LoggerLike, namespaces?: NamespaceStore, obsLog?: RebuildLogger, consolidated?: ConsolidatedStore): void;
 export {};

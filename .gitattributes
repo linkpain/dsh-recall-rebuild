@@ -1,0 +1,6 @@
+# 仓库内文本文件统一 LF:Windows 检出后若变 CRLF,git diff 会把整仓报成 modified,
+# 评审时看不出真实改动(本项目历史上就踩过这个坑)。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
