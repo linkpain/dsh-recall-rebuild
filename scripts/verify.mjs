@@ -495,6 +495,50 @@ resetRecentInjection();
 check('dedupe:reset 清空状态',
   demoteRecentlyInjected(three, 'ag1', T0 + 1000).map((m) => m.id).join(',') === 'm1,m2,m3');
 
+// ── 2k. 字符 n-gram 语义通道与精排 ──────────────────────────
+console.log('[2k] 语义通道与精排');
+const {
+  buildCharNgramVector, cosineSimilarity, rerankBySemantic,
+  SEMANTIC_MIN_SIM, SEMANTIC_RERANK_ALPHA,
+} = await import(`${distUrl}store.js`);
+check('sem:空串得到空向量', buildCharNgramVector('').size === 0);
+check('sem:空向量余弦为 0',
+  cosineSimilarity(buildCharNgramVector(''), buildCharNgramVector('咖啡')) === 0);
+check('sem:完全相同文本余弦为 1', (() => {
+  const v = buildCharNgramVector('用户喜欢喝冰美式咖啡');
+  return Math.abs(cosineSimilarity(v, v) - 1) < 1e-9;
+})());
+check('sem:相似句高于无关句', (() => {
+  const q = buildCharNgramVector('我下午想喝点冰的咖啡');
+  const near = buildCharNgramVector('用户喜欢喝冰美式咖啡,常去公司楼下的星巴克');
+  const far = buildCharNgramVector('用户养了一只叫煤球的黑色英短猫');
+  return cosineSimilarity(q, near) > cosineSimilarity(q, far);
+})());
+check('sem:拉丁词参与特征', buildCharNgramVector('MacBook Pro').has('w:macbook'));
+check('sem:中文二元组参与特征', buildCharNgramVector('冰美式').has('g:冰美'));
+check('sem:门槛不做高精度过滤', SEMANTIC_MIN_SIM > 0 && SEMANTIC_MIN_SIM < 0.02);
+check('sem:精排系数在(0,1]', SEMANTIC_RERANK_ALPHA > 0 && SEMANTIC_RERANK_ALPHA <= 1);
+
+// 精排:构造「名次靠前但语义无关」与「名次靠后但语义贴合」两条,语义贴合者应上浮
+const COFFEE = {
+  id: 'coffee', content: '用户喜欢喝冰美式咖啡,常去公司楼下的星巴克',
+  type: 'fact', sceneName: '咖啡偏好', family: '', priority: 5, timestampStr: '',
+};
+const CAT = {
+  id: 'cat', content: '用户养了一只叫煤球的黑色英短猫',
+  type: 'fact', sceneName: '宠物', family: '', priority: 5, timestampStr: '',
+};
+const reranked = rerankBySemantic([CAT, COFFEE], '我下午想喝点冰的咖啡');
+check('sem:精排把语义贴合的条目提到前面', reranked[0].id === 'coffee');
+check('sem:精排不丢候选', reranked.length === 2);
+check('sem:精排不改动入参数组', (() => {
+  const src = [CAT, COFFEE];
+  rerankBySemantic(src, '冰咖啡');
+  return src[0].id === 'cat';
+})());
+check('sem:单条列表原样返回', rerankBySemantic([COFFEE], '咖啡').length === 1);
+check('sem:空列表安全', rerankBySemantic([], '咖啡').length === 0);
+
 // ── 3. 重建引擎纯逻辑(不实际调用 LLM) ───────────────────────
 console.log('[3] rebuild 碎片组装预算');
 const { buildFragments: _b } = await import(path.join(dist, 'rebuild.js')).catch(() => ({}));

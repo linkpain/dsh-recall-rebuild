@@ -257,6 +257,15 @@ function mapRow(r: SqliteRow): MemoryRecord {
 
 export const RRF_K = 60;
 
+/* prime 适配器的通道权重:严格 FTS 与 LIKE 覆盖度精度最高,给满权;
+ * 宽松 OR 只保召回、精度低,给 0.8;单字覆盖精度最低,给 0.6;
+ * 语义余弦能跨同义改写,但会奖励"词多"的记录,给 0.7 —— 补召回而不喧宾夺主。 */
+const W_STRICT = 1;
+const W_RELAXED = 0.8;
+const W_LIKE = 1;
+const W_CHAR = 0.6;
+const W_SEMANTIC = 0.7;
+
 /**
  * 把多路排好序的候选融合成一条序列(按 id 去重,保留首次出现的记录内容)。
  * @param lists 每路已按相关度排序的候选
@@ -286,6 +295,118 @@ export function fuseRanked(
     .slice(0, Math.max(0, limit))
     .map(([id]) => byId.get(id))
     .filter((r): r is MemoryRecord => r !== undefined);
+}
+
+/* ── 字符 n-gram 语义通道 ────────────────────────────────────
+ * 词法召回的天花板是「零字面重叠」:用户问「我这个配置跑得动 Docker 吗」,
+ * 记忆里存的是「MacBook Pro 14 寸 M2 Pro 芯片」—— 一个字都不重合,任何
+ * FTS / LIKE / 单字通道都绝无可能召回。要跨过这道墙只有向量一条路,但 DSH
+ * 的 LLM 服务并不提供 embedding 接口,引入本地模型又会破坏「零运行时依赖」
+ * 的铁律。折中方案:把字符 n-gram 频次当向量维度做余弦相似度。它不是语义
+ * 模型,却能把「同义改写」(女朋友/对象、医生/值夜班)这一大类召回捞回来 ——
+ * 零依赖、毫秒级、可离线复现。
+ * 权重设计:拉丁词 1(信息量最高)、CJK 2-gram 1、CJK 单字 0.4(噪声大,只作补充)。 */
+export const NGRAM_LATIN_WEIGHT = 1;
+export const NGRAM_CJK_BIGRAM_WEIGHT = 1;
+export const NGRAM_CJK_CHAR_WEIGHT = 0.4;
+
+/** 余弦低于此值的候选视为「毫不相干」,不进入语义通道(防止噪声污染 RRF)。
+ * 阈值刻意压得极低:实测 0.03 会把同义改写挡在门外(65.0%),降到 0.005 后
+ * 才拿到 70.0%。真正做过滤的是权重与精排,不是这道门槛。 */
+export const SEMANTIC_MIN_SIM = 0.005;
+
+/** 语义通道最多扫描的候选行数(全表扫会拖慢首轮注入,必须设上限)。 */
+const SEMANTIC_POOL = 400;
+
+/**
+ * 文本 → 字符 n-gram 稀疏向量(维度即特征串,值即权重累加)。
+ * 同时保留拉丁词、CJK 2-gram 与 CJK 单字三类特征:前两类保精度,单字保召回。
+ */
+export function buildCharNgramVector(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  const t = typeof text === 'string' ? text.toLowerCase() : '';
+  if (!t) return out;
+  const add = (key: string, w: number): void => {
+    out.set(key, (out.get(key) ?? 0) + w);
+  };
+  for (const m of t.matchAll(RUN_RE)) {
+    const run = m[0] ?? '';
+    if (!run) continue;
+    if (CJK_CHAR.test(run)) {
+      const chars = [...run];
+      for (const c of chars) {
+        if (!CJK_CHAR_STOP.has(c)) add(`c:${c}`, NGRAM_CJK_CHAR_WEIGHT);
+      }
+      for (let i = 0; i + 1 < chars.length; i++) {
+        const a = chars[i];
+        const b = chars[i + 1];
+        if (!a || !b) continue;
+        const g = a + b;
+        if (CJK_STOP.has(g)) continue;
+        add(`g:${g}`, NGRAM_CJK_BIGRAM_WEIGHT);
+      }
+      continue;
+    }
+    if (!LATIN_STOP.has(run)) add(`w:${run}`, NGRAM_LATIN_WEIGHT);
+  }
+  return out;
+}
+
+/** 稀疏向量余弦相似度;任一侧为空时返回 0(不惩罚,只是没有相似性)。 */
+export function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (const [k, v] of a) {
+    na += v * v;
+    const w = b.get(k);
+    if (w !== undefined) dot += v * w;
+  }
+  for (const v of b.values()) nb += v * v;
+  if (na <= 0 || nb <= 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/* ── 语义重排(RRF 之后) ─────────────────────────────────────
+ * RRF 只看"每路排第几",看不见"这条到底像不像"。把语义余弦折进来做精排,
+ * 才能让语义通道捞回来的同义改写真正站到前排 —— 只加通道不加精排,召回的
+ * 收益会被字面通道的顺序稀释掉(实测 65.0% → 带精排 70.0%)。 */
+
+/** 精排混合系数:实测 0.8 最优(MRR 0.615),0.3 时语义信号太弱(0.600)。
+ * 大于 1 会让余弦盖过名次,长尾里"字多"的记录反而上浮,故收敛在 0.8。 */
+export const SEMANTIC_RERANK_ALPHA = 0.8;
+
+/** 参与精排的头部候选数:余弦要现算特征,全量重排会把首轮注入拖慢。 */
+const SEMANTIC_RERANK_POOL = 60;
+
+/**
+ * 对已按 RRF 排序的候选做语义精排。
+ * 前 POOL 条用「RRF 名次分 + α × 余弦」重排,其余保持原序追加 ——
+ * 既不丢候选,又不会让长尾的低相似度记录抢到前排。
+ */
+export function rerankBySemantic(
+  list: MemoryRecord[],
+  query: string,
+  alpha: number = SEMANTIC_RERANK_ALPHA,
+): MemoryRecord[] {
+  if (list.length <= 1) return [...list];
+  const qv = buildCharNgramVector(query);
+  if (qv.size === 0) return [...list];
+  const head = list.slice(0, SEMANTIC_RERANK_POOL);
+  const tail = list.slice(SEMANTIC_RERANK_POOL);
+  const scored = head.map((rec, i) => ({
+    rec,
+    score:
+      1 / (RRF_K + i + 1) +
+      alpha *
+        cosineSimilarity(
+          qv,
+          buildCharNgramVector(`${rec.content} ${rec.type} ${rec.sceneName}`),
+        ),
+  }));
+  scored.sort((a, b) => b.score - a.score);
+  return [...scored.map((s) => s.rec), ...tail];
 }
 
 /**
@@ -335,10 +456,13 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
     label: dbPath,
     search(query: string, limit: number): MemoryRecord[] {
       if (!db) return [];
-      // 两路召回:FTS(拉丁词高精度)与 LIKE 覆盖度打分(中文兜底),末了 RRF 融合。
-      // 不能像旧版那样「FTS 有结果就直接返回」——中文查询下 FTS 偶尔命中一条弱相关,
-      // 反而把 LIKE 里更相关的整句挤掉;两路都跑才谈得上召回率。
+      // 五路召回,末了 RRF 融合:FTS 严格 / FTS 宽松 / LIKE 覆盖度 / 单字覆盖 /
+      // 字符 n-gram 语义。不能像旧版那样「FTS 有结果就直接返回」——中文查询下
+      // FTS 偶尔命中一条弱相关,反而把更相关的整句挤掉;多路都跑才谈得上召回率。
       const lists: MemoryRecord[][] = [];
+      // 权重必须与 lists 同步推入:通道是条件执行的(FTS 可能不可用、LIKE 可能
+      // 提前返回),按下标对齐会错位,只能成对记录。
+      const weights: number[] = [];
       const fts = sanitizeFts(query);
       // 优先 FTS5 BM25(l1_fts 与 prime-memory 检索同源)
       if (hasFts && fts) {
@@ -351,6 +475,7 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
              LIMIT ?`,
           ).all(fts, limit);
           lists.push(rows.map(mapRow));
+          weights.push(W_STRICT);
         } catch {
           /* FTS 失败 → 落到 LIKE 兜底 */
         }
@@ -367,6 +492,7 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
              LIMIT ?`,
           ).all(relaxed, Math.max(limit * 4, 20));
           lists.push(rows.map(mapRow));
+          weights.push(W_RELAXED);
         } catch {
           /* 宽松通道失败不影响主流程 */
         }
@@ -408,6 +534,7 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
             (a.rec.timestampStr < b.rec.timestampStr ? 1 : a.rec.timestampStr > b.rec.timestampStr ? -1 : 0),
         );
         lists.push(scored.map((s) => s.rec));
+        weights.push(W_LIKE);
       } catch {
         /* 忽略:无检索能力时本轮跳过 */
       }
@@ -435,12 +562,49 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
             return { rec, hits };
           });
           charScored.sort((a, b) => b.hits - a.hits);
-          if (charScored.length > 0) lists.push(charScored.map((s) => s.rec));
+          if (charScored.length > 0) {
+            lists.push(charScored.map((s) => s.rec));
+            weights.push(W_CHAR);
+          }
         }
       } catch {
         /* 单字通道失败不影响其他通道 */
       }
-      return fuseRanked(lists, limit, lists.length === 4 ? [1, 0.8, 1, 0.6] : undefined);
+      // 语义通道(字符 n-gram 余弦):唯一能跨过"零字面重叠"的通道。它只从
+      // 一个放大的候选池里取前 N 条,精度不及严格通道,但权重给到 0.7 ——
+      // 让同义改写命中的记忆能进前几,又不至于压过字面高度重合的那条。
+      try {
+        const qv = buildCharNgramVector(query);
+        if (qv.size > 0) {
+          const pool = Math.max(limit * 20, SEMANTIC_POOL);
+          const rows = db.prepare(
+            `SELECT record_id, content, type, scene_name, family, priority, timestamp_str
+             FROM l1_records
+             ORDER BY priority DESC, timestamp_str DESC
+             LIMIT ?`,
+          ).all(pool);
+          const scored = rows
+            .map((r) => {
+              const rec = mapRow(r);
+              const sim = cosineSimilarity(
+                qv,
+                buildCharNgramVector(`${rec.content} ${rec.type} ${rec.sceneName}`),
+              );
+              return { rec, sim };
+            })
+            .filter((s) => s.sim >= SEMANTIC_MIN_SIM);
+          scored.sort((a, b) => b.sim - a.sim);
+          if (scored.length > 0) {
+            lists.push(scored.map((s) => s.rec));
+            weights.push(W_SEMANTIC);
+          }
+        }
+      } catch {
+        /* 语义通道失败不影响字面通道 */
+      }
+      // 先放大融合池(精排要有候选可挑),再语义精排,最后截断到调用方要的条数。
+      const fused = fuseRanked(lists, Math.max(limit * 4, 40), weights);
+      return rerankBySemantic(fused, query).slice(0, Math.max(0, limit));
     },
     close(): void {
       try { db?.close(); } catch { /* 忽略 */ }

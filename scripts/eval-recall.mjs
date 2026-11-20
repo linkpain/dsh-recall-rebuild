@@ -180,7 +180,7 @@ if (after.recall <= before.recall) {
 }
 // 回归闸门:改动前锁 0.55(当前实测 0.625),留 7 个点余量给 fixture 微调,
 // 但任何把中文召回打回「几乎全靠单字」的改动都会掉到线下。
-const MIN_RECALL = Number(process.env.EVAL_MIN_RECALL ?? 0.55);
+const MIN_RECALL = Number(process.env.EVAL_MIN_RECALL ?? 0.65);
 if (after.recall < MIN_RECALL) {
   console.error('');
   console.error('失败:recall@5 ' + pct(after.recall) + ' 低于回归闸门 ' + pct(MIN_RECALL));

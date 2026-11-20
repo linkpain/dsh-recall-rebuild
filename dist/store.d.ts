@@ -62,6 +62,29 @@ export declare const RRF_K = 60;
  * @param weights 每路权重(缺省 1);精度高的通道给高权重,召回通道给低权重
  */
 export declare function fuseRanked(lists: MemoryRecord[][], limit: number, weights?: number[]): MemoryRecord[];
+export declare const NGRAM_LATIN_WEIGHT = 1;
+export declare const NGRAM_CJK_BIGRAM_WEIGHT = 1;
+export declare const NGRAM_CJK_CHAR_WEIGHT = 0.4;
+/** 余弦低于此值的候选视为「毫不相干」,不进入语义通道(防止噪声污染 RRF)。
+ * 阈值刻意压得极低:实测 0.03 会把同义改写挡在门外(65.0%),降到 0.005 后
+ * 才拿到 70.0%。真正做过滤的是权重与精排,不是这道门槛。 */
+export declare const SEMANTIC_MIN_SIM = 0.005;
+/**
+ * 文本 → 字符 n-gram 稀疏向量(维度即特征串,值即权重累加)。
+ * 同时保留拉丁词、CJK 2-gram 与 CJK 单字三类特征:前两类保精度,单字保召回。
+ */
+export declare function buildCharNgramVector(text: string): Map<string, number>;
+/** 稀疏向量余弦相似度;任一侧为空时返回 0(不惩罚,只是没有相似性)。 */
+export declare function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number;
+/** 精排混合系数:实测 0.8 最优(MRR 0.615),0.3 时语义信号太弱(0.600)。
+ * 大于 1 会让余弦盖过名次,长尾里"字多"的记录反而上浮,故收敛在 0.8。 */
+export declare const SEMANTIC_RERANK_ALPHA = 0.8;
+/**
+ * 对已按 RRF 排序的候选做语义精排。
+ * 前 POOL 条用「RRF 名次分 + α × 余弦」重排,其余保持原序追加 ——
+ * 既不丢候选,又不会让长尾的低相似度记录抢到前排。
+ */
+export declare function rerankBySemantic(list: MemoryRecord[], query: string, alpha?: number): MemoryRecord[];
 /**
  * 打开 dsh-prime-memory 的只读记忆库。
  * @param dataDir prime-memory 的数据目录(默认 $DSH_HOME/memory)
