@@ -148,6 +148,9 @@ flowchart LR
 | `consolidate.timeoutMs` | `20000` | 单簇巩固超时(离线任务可放宽) |
 | `consolidate.confidenceThreshold` | `0.4` | 遗忘阈值:置信度低于它且长期未命中 → dormant(召回降权) |
 | `consolidate.dormantDays` | `30` | 多少天未命中(且低置信)进入 dormant |
+| `consolidate.reviveSimilarity` | `0.15` | 休眠条目被本轮碎片「重新提起」的相似度门槛,达到即唤醒 |
+| `consolidate.supersedeThreshold` | `0.6` | 改口覆盖阈值(字符子序列比例):新条目与旧条目「几乎同一句话、只差一个值」时把旧的标记 superseded |
+| `consolidate.reinforceThreshold` | `0.85` | 重复观察强化阈值:新观察与已有条目几乎一字不差时不新建,改为上调那条记忆的置信度 |
 | `commands.enabled` | `true` | 巩固层交互命令总开关 |
 | `commands.name` | `recall-rebuild` | 注册的命令名(不含前导 `/`);与其它插件冲突时改名 |
 
@@ -160,9 +163,11 @@ flowchart LR
 1. **累积**:每轮检索命中的碎片进入 `pending.json`(去重、限量);
 2. **聚类**:纯本地按 2-gram 相似度把同主题碎片分簇(无需 LLM、零成本);
 3. **LLM 抽象**:每簇交给宿主 LLM,提炼为 1-3 条稳定的长期记忆(`stable-fact / pattern / preference / relationship / mood`),忽略一次性噪音;
-4. **联想扩散**:本轮产出的条目两两建立关联边(`links.json` 权重累加)——召回命中一条时,强关联主题顺带想起;
-5. **遗忘(只读侧)**:低置信 + 30 天未命中的条目进入 `dormant`(召回降权,不删除、不写底层库);
-6. **越用越稳**:每次命中 `touchCount+1`,高置信条目优先注入。
+4. **联想扩散**:本轮产出的条目两两建立关联边(`links.json` 权重累加)——召回命中一条时,强关联主题顺带想起。边权按半衰期 30 天衰减(久未共现的联想自然变淡),扩散走两跳:强边带出的条目,若再连着别的强边,也会被顺带想起(权重更低);
+5. **遗忘与唤醒(双向,只读侧)**:低置信 + 30 天未命中的条目进入 `dormant`(召回降权,不删除、不写底层库);而休眠条目只要重新被提起——本轮召回碎片与它足够相似(`reviveSimilarity`),或被命中、被 `edit` 修正——就回到 `active`。遗忘是可逆的,像人一样「一时想不起来」不等于「永久失忆」;
+6. **越用越稳**:每次命中 `touchCount+1` 且置信度小幅上调(封顶 0.95),高置信条目优先注入;因此被反复用到的记忆会自然爬出遗忘区;
+7. **改口覆盖**:用户改口(「我住在杭州」→「我住在成都」)时,新记忆不会和旧记忆并存打对台——字符子序列分足够高且只差一个值时,旧条目标记 `superseded` 并指向新条目:永不注入、永不被命中唤醒,但用户 `edit` 它仍可翻案。判断用字符 LCS 而非 Jaccard,因为改口的差异只占一个槽位,词袋相似度会被稀释到 0.25 而漏判;
+8. **重复观察强化**:同一件事又被观察到(几乎一字不差,阈值 `reinforceThreshold` 高于改口的 `supersedeThreshold`)时,不新建条目,而是把已有记忆的置信度上调 0.1——比召回命中的 0.05 更强,因为「用户又亲口说了一遍」是比「检索又匹配到」更硬的证据。置信度因此是动态的:创建时只决定起点,之后由命中、重复观察、用户 edit 共同塑造。
 
 触发:启动后空闲 10s 查一次,之后每 `checkIntervalMs` 查一次;pending 达标且距上次巩固超 `minIntervalMs` 才真正执行;失败保留 pending 下次再试。
 
@@ -176,7 +181,7 @@ flowchart LR
 | --- | --- |
 | `/recall-rebuild list [--all]` | 查看长期记忆:类型 / 置信度 / 命中次数 / 更新时间;dormant(已降权)单独标出。默认只显示当前用户的记忆 + 共享记忆,`--all` 查看全部(含其它 IM 用户) |
 | `/recall-rebuild now` | 立即触发一次睡眠巩固(绕过最短间隔;pending 为空时提示) |
-| `/recall-rebuild edit <id> <新内容>` | 修正一条记忆的内容(人也会记错、改口) |
+| `/recall-rebuild edit <id> <新内容>` | 修正一条记忆的内容(人也会记错、改口);改完即抬置信度并回到 `active`,改口能真的救回一条将遗忘的记忆 |
 | `/recall-rebuild forget <id>` | 主动删除一条记忆及其联想边(与被动遗忘不同,这是显式操作,不写底层库) |
 | `/recall-rebuild help` | 显示用法 |
 
@@ -231,6 +236,8 @@ flowchart LR
 - [x] 遗忘真正生效(修掉 `confidenceThreshold` 恒不触发的死代码)+ 命中落盘批量化(原来每条记忆一次全量重写)—— v0.1.7 已实现;
 - [x] CI(typecheck + 运行时验证 + 召回评测闸门,Node 22/24 矩阵)—— v0.1.7 已实现;
 - [x] 语义召回通道(字符 n-gram 余弦 + 精排,零依赖解决同义改写漏召,62.5% → 70.0%)—— v0.1.8 已实现;
+- [x] 遗忘可逆(dormant 双向:相似召回/命中/edit 都能唤醒;命中抬升置信度)—— v0.1.9 已实现;
+- [x] 改口覆盖(supersede:字符子序列判定「同一句话换个值」,旧条目不注入不复活)+ 联想边半衰期衰减与两跳扩散 + 重复观察强化(置信度动态化)—— v0.1.9 已实现;
 - [ ] 真·嵌入向量通道(需要引入嵌入模型或宿主提供 embedding 接口,暂不破坏零依赖);
 - [ ] 记忆的增改删写入流水线(ADD/UPDATE/DELETE 判定),欢迎提 issue。
 
@@ -242,9 +249,10 @@ flowchart LR
 4. **幻觉受控但非零**:重建 prompt 明确禁止编造碎片外事实,但 LLM 仍有漂移概率;注入标注记忆依据 id 便于审计。需要强事实的场景可关掉重建(`rebuild.enabled=false`)。
 5. **token 消耗**:每轮召回命中即产生一次重建调用(通常百级 token),由宿主模型路由计费;巩固只在空闲且碎片达标时发生,每次几十~几百 token。
 6. **日志零成本但非自动诊断**:日志只记录事实(碎片/重建/耗时/跳过原因),不做好坏判定;用户可对比判断,或切换 `inject.strategy=append` 运行时对比。
-7. **巩固层是启发式蒸馏,非底层改写**:聚类基于 2-gram 相似度(可能把近义不同词的两条碎片分到不同簇);LLM 抽象有轻幻觉风险(已在 prompt 禁止编造);dormant 只是召回降权,不会删底层库、也不会在本插件内物理删除。
-8. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
-9. **交互命令依赖宿主命令服务**:支持 `/` 命令的界面(桌面/Web UI)都有;无命令服务的组合(如 headless)下命令静默不注册,插件其余功能不受影响。
+7. **巩固层是启发式蒸馏,非底层改写**:聚类基于 2-gram 相似度(可能把近义不同词的两条碎片分到不同簇);LLM 抽象有轻幻觉风险(已在 prompt 禁止编造);dormant 只是召回降权,不会删底层库、也不会在本插件内物理删除。唤醒同样依赖字符相似度——换了说法重新提起旧事时可能唤不醒,此时用 `/recall-rebuild list --all` 找到它再 `edit` 一次即可。
+8. **改口判定是字面启发式,不是逻辑推理**:靠「字符子序列对齐后差异段的形状」判断——只有「等长单槽替换(≤6 字)」才算改口,整句是另一句的一部分(「用户的妈妈住在杭州」→「用户住在杭州」)、整块换掉(「想换工作」→「已经换到新公司了」)都不算。仍然会错的两处:①措辞差别太大时判不出覆盖,两条并存,用 `list` 找到旧的 `forget` 掉即可;②**槽位是否单值需要语义知识**——「喜欢冰美式」和「喜欢手冲咖啡」可以并存(多值槽位),「住在杭州」和「住在成都」不能(单值槽位),字面相似度给不出这个区别,目前会把前者也判成改口。这是已知边界,如实写进评测脚本的「字面不可判定」一栏。
+9. **未覆盖**:LoRA 权重内化等权重级记忆不在本插件范围(见 Roadmap)。
+10. **交互命令依赖宿主命令服务**:支持 `/` 命令的界面(桌面/Web UI)都有;无命令服务的组合(如 headless)下命令静默不注册,插件其余功能不受影响。
 
 ## 开发与验证
 
@@ -252,15 +260,21 @@ flowchart LR
 npm install
 npm run typecheck         # tsc --noEmit
 npm run build             # 编译到 dist/
-npm test                  # build + scripts/verify.mjs(140 条运行时断言)
+npm test                  # build + scripts/verify.mjs(202 条运行时断言)
 npm run test:eval         # 中文召回评测,recall@5 低于 0.65 直接失败
-npm run test:all          # 两者串跑(CI 跑的就是这套)
+npm run test:consolidate  # 巩固层评测(改口/强化/唤醒/扩散的标注集指标)
+npm run test:all          # 三者串跑(CI 跑的就是这套)
 npm pack --dry-run        # 检查发布包内容
 ```
 
-`scripts/verify.mjs` 覆盖:导出与 Config 默认值、`sanitizeFts`、FTS 命中与 LIKE 兜底、palace(Markdown)与 dsh-memory(JSON)适配器、命名空间隔离、可观测日志、巩固层聚类/遗忘、命令解析、时效衰减、RRF 融合与排序、跨轮去重、字符 n-gram 语义通道与精排。它 import 的是 `dist/`,所以必须先 build。
+`scripts/verify.mjs` 覆盖:导出与 Config 默认值、`sanitizeFts`、FTS 命中与 LIKE 兜底、palace(Markdown)与 dsh-memory(JSON)适配器、命名空间隔离、可观测日志、巩固层聚类/遗忘与唤醒、改口覆盖(supersede)与注入判定、联想边半衰期衰减与两跳扩散、重复观察强化与置信度动态化、命令解析、时效衰减、RRF 融合与排序、跨轮去重、字符 n-gram 语义通道与精排。它 import 的是 `dist/`,所以必须先 build。
 
 评测闸门可用环境变量放宽/收紧:`EVAL_MIN_RECALL=0.7 npm run test:eval`(默认 0.65,当前实测 70.0%)。
+
+`scripts/eval-consolidate.mjs` 是巩固层的标注集评测。改口覆盖、重复观察、遗忘唤醒、联想扩散这四件事全部建立在字符相似度阈值上,松一格误杀仍为真的记忆,紧一格漏判改口——没有标注集,调阈值等于蒙。它报三个数:
+
+- **改口覆盖 / 重复强化**:30 对人工标注样本上的 P/R/F1(当前改口 F1 96.0%、强化 F1 100.0%)。其中 3 对属于**字面判不出来**的样本(「喜欢冰美式」vs「喜欢手冲咖啡」——两个喜好可以并存,除非知道槽位是单值),单独列出、不参与评分,也不假装解决了;
+- **遗忘可逆 / 联想扩散**:端到端跑一遍(45 天后休眠 → 重新提起 → 唤醒 → 注入;强边一跳/两跳到达、90 天后淡出),用行为断言而不是分数。
 
 ## License
 
@@ -280,7 +294,7 @@ This plugin upgrades the **recall/presentation layer**:
 - Injects via `agent/pre-step` with `source.kind='plugin:recall-rebuild'`, so it is never re-captured by the underlying memory plugin; `replace` strategy swaps out the other plugin's raw-text recall in place, `append` adds alongside;
 - **Never blocks a conversation**: missing store, missing model route, timeout or rebuild failure all silently skip the step;
 - **Observable rebuild quality**: every round appends one JSONL audit line to `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` — raw fragments vs rebuilt snippet side by side, injection mode / latency / skip reason, plus a throttled `stats.json` — zero extra injection, zero token cost, so you can judge for yourself whether rebuilding beats raw recall;
-- **Sleep consolidation + associative spreading (long-term memory layer)**: while idle, accumulated fragments are clustered (local 2-gram similarity), LLM-distilled into stable memories (`stable-fact`/`pattern`/`preference`/`relationship`/`mood`), linked in a spreading-activation graph, and low-confidence long-unused entries decay to `dormant` (recall down-weighting, never deleted, never written to the base store). Consolidated entries are recalled first, get more stable the more they are hit, and strong links make related topics surface too — closer to how the brain consolidates daytime experience overnight. Everything lives under `<DSH_HOME>/recall-rebuild/consolidated/`;
+- **Sleep consolidation + associative spreading (long-term memory layer)**: while idle, accumulated fragments are clustered (local 2-gram similarity), LLM-distilled into stable memories (`stable-fact`/`pattern`/`preference`/`relationship`/`mood`), linked in a spreading-activation graph, and low-confidence long-unused entries decay to `dormant` (recall down-weighting, never deleted, never written to the base store) — and that forgetting is **reversible**: a dormant entry wakes up again when later recall fragments are similar enough to it (`consolidate.reviveSimilarity`), when it gets hit, or when you `edit` it, and every hit nudges its confidence up so frequently-used memories climb back out on their own. Consolidated entries are recalled first, get more stable the more they are hit, and strong links make related topics surface too — closer to how the brain consolidates daytime experience overnight. Link weights decay with a 30-day half-life and spreading goes two hops (a strong link's strong link still surfaces, at lower priority). When you change your mind ("I live in Hangzhou" → "I live in Chengdu") the new entry **supersedes** the old one — judged by character-subsequence ratio, so a one-slot change is caught where bag-of-words similarity would dilute it; superseded entries are never injected and never woken, though editing one still overrides that. Seeing the same thing again (nearly verbatim, `consolidate.reinforceThreshold`) does not create a near-duplicate: it raises the existing entry's confidence by 0.1 — more than a recall hit's 0.05, because hearing it from you again beats the retriever matching it again. Confidence is therefore dynamic: creation only sets the starting point. Everything lives under `<DSH_HOME>/recall-rebuild/consolidated/`;
 - **Manage your long-term memories with slash commands**: `/recall-rebuild list [--all]` (view consolidated memories with type/confidence/hit count), `now` (trigger a consolidation immediately), `edit <id> <text>` (fix a misremembered entry) and `forget <id>` (explicitly delete an entry and its links). The command view follows the same per-user isolation rules; it silently skips registration when the host has no command service;
 - **Zero infra cost**: no GPU/VM — rebuild calls go through the host's existing LLM routing, ~hundreds of tokens per hit; uses only Node's built-in `node:sqlite`.
 

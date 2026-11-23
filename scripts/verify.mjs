@@ -349,6 +349,9 @@ check('cons:低置信+长期未命中 → dormant',
   isDormant(dormantSample, nowMs, { confidenceThreshold: 0.4, dormantDays: 30 }) === true);
 check('cons:高置信不遗忘',
   isDormant({ ...dormantSample, confidence: 0.8 }, nowMs, { confidenceThreshold: 0.4, dormantDays: 30 }) === false);
+// 状态只是「上次扫描的结论」,不能反过来锁死判定:否则 dormant 永远算 dormant
+check('cons:status 不参与遗忘判定(休眠可逆)',
+  isDormant({ ...dormantSample, status: 'dormant', confidence: 0.8 }, nowMs, { confidenceThreshold: 0.4, dormantDays: 30 }) === false);
 const csDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-cs-'));
 const cs = new ConsolidatedStore(csDir, logger);
 cs.load();
@@ -371,7 +374,163 @@ cs.addLink('c_1', 'c_2', '同轮巩固');
 check('cons:联想边权重累加', cs.strongLinks('c_1', 2, 5).length === 1 && cs.strongLinks('c_1', 2, 5)[0].weight === 2);
 cs.touch('c_1', nowMs, { confidenceThreshold: 0.4, dormantDays: 30 });
 check('cons:touch 计数', cs.get('c_1')?.touchCount === 1);
+check('cons:touch 抬升置信度(越用越稳)', (cs.get('c_1')?.confidence ?? 0) > 0.6);
+// 复活链路:低置信 + 长期未命中 → dormant;再被命中 → 置信度上涨、状态回 active
+cs.upsert({
+  id: 'c_sleep', userKey: null, type: 'stable-fact', content: '用户曾在成都出差',
+  sourceIds: ['r1'], confidence: 0.3, status: 'dormant',
+  createdAt: nowMs - 40 * 86400000, updatedAt: nowMs - 40 * 86400000, touchCount: 0,
+});
+check('cons:休眠条目先被判为应休眠',
+  isDormant(cs.get('c_sleep'), nowMs, { confidenceThreshold: 0.4, dormantDays: 30 }) === true);
+cs.touch('c_sleep', nowMs, { confidenceThreshold: 0.4, dormantDays: 30 });
+check('cons:命中后置信度上涨', (cs.get('c_sleep')?.confidence ?? 0) > 0.3);
+check('cons:命中后状态回到 active', cs.get('c_sleep')?.status === 'active');
+check('cons:复活后不再被判休眠',
+  isDormant(cs.get('c_sleep'), nowMs, { confidenceThreshold: 0.4, dormantDays: 30 }) === false);
+// 用户手改 = 直接证据:抬置信度、状态回 active(否则「改完还是休眠」等于白改)
+cs.upsert({
+  id: 'c_fix', userKey: null, type: 'stable-fact', content: '用户住在杭州',
+  sourceIds: ['r1'], confidence: 0.3, status: 'dormant',
+  createdAt: nowMs - 40 * 86400000, updatedAt: nowMs - 40 * 86400000, touchCount: 0,
+});
+const revised = cs.revise('c_fix', '用户住在成都', { confidenceThreshold: 0.4, dormantDays: 30 });
+check('cons:edit 改内容', revised?.content === '用户住在成都');
+check('cons:edit 抬置信度到阈值以上', (revised?.confidence ?? 0) > 0.4);
+check('cons:edit 让休眠条目复活', revised?.status === 'active');
+check('cons:edit 不存在的 id 返回 undefined',
+  cs.revise('nope', 'x', { confidenceThreshold: 0.4, dormantDays: 30 }) === undefined);
 check('cons:触发判定(pending 不足不触发)', cs.shouldRun({ minFragments: 20, minIntervalMs: 0 }, nowMs) === false);
+
+// ── 2f-2. 改口覆盖(supersede)──────────────────────────────────
+// 用户「改口」= 同一句话换了个值。Jaccard 会被差异稀释,包含度不会。
+const { containment, supersedeScore, findSupersedePairs, decideInjection } =
+  await import(`${distUrl}consolidated.js`);
+// 改口 = 同一句话换个值:Jaccard 与二元组包含度都会被「差异摊薄」,子序列比例不会
+check('sup:子序列分抓住「同一句话换个值」',
+  supersedeScore('用户住在成都', '用户住在杭州') > similarity('用户住在成都', '用户住在杭州'));
+check('sup:子序列分对无关主题低',
+  supersedeScore('用户住在成都', '用户养了一只叫煤球的猫') < 0.4);
+check('sup:子序列分空串安全', supersedeScore('', 'x') === 0);
+check('sup:包含度预筛挡住无关对',
+  containment('用户住在成都', '用户养了一只叫煤球的猫') < 0.3);
+
+const supOld = {
+  id: 'old_1', userKey: null, type: 'stable-fact', content: '用户住在杭州',
+  sourceIds: ['r1'], confidence: 0.6, status: 'active', createdAt: nowMs, updatedAt: nowMs, touchCount: 0,
+};
+const supFresh = [{ id: 'new_1', type: 'stable-fact', content: '用户住在成都', userKey: null }];
+const supPairs = findSupersedePairs(supFresh, [supOld], 0.6);
+check('sup:改口被识别为取代对', supPairs.length === 1 && supPairs[0][0] === 'new_1' && supPairs[0][1] === 'old_1');
+check('sup:不同类型不误判取代',
+  findSupersedePairs([{ ...supFresh[0], type: 'preference' }], [supOld], 0.6).length === 0);
+check('sup:不同用户不互相取代',
+  findSupersedePairs([{ ...supFresh[0], userKey: 'im:qq:u_bob' }], [supOld], 0.6).length === 0);
+check('sup:内容完全相同不算取代(那是重复不是改口)',
+  findSupersedePairs([{ ...supFresh[0], content: '用户住在杭州' }], [supOld], 0.6).length === 0);
+check('sup:无关新条目不取代旧条目',
+  findSupersedePairs([{ id: 'new_2', type: 'stable-fact', content: '用户养了一只黑猫', userKey: null }], [supOld], 0.6).length === 0);
+
+// 分数够高 ≠ 该取代:差异的「形状」才决定它是改口还是另一件事
+const { judgeSupersede } = await import(`${distUrl}consolidated.js`);
+check('sup:同一模板换一个值 → 改口',
+  judgeSupersede('用户住在杭州', '用户住在成都', 0.6).sameTemplate === true);
+check('sup:整句是旧句子的一部分(少了主语)→ 不是改口',
+  judgeSupersede('用户的妈妈住在杭州', '用户住在杭州', 0.6).sameTemplate === false);
+check('sup:同一句话 → 是重复观察,不是改口',
+  judgeSupersede('用户住在杭州', '用户住在杭州', 0.6).sameFact === true &&
+  judgeSupersede('用户住在杭州', '用户住在杭州', 0.6).sameTemplate === false);
+check('sup:一句话是另一句的省略 → 是重复观察',
+  judgeSupersede('用户喜欢喝冰美式咖啡', '用户喜欢喝冰美式', 0.6).sameFact === true);
+check('sup:补一个限定语换了主语 → 不算重复观察',
+  judgeSupersede('用户对芒果过敏', '用户的女朋友对芒果过敏', 0.6).sameFact === false);
+check('sup:换日期的数字算换槽位,不算补字',
+  judgeSupersede('用户的生日是十月二十三号', '用户的生日是十一月二十三号', 0.6).sameTemplate === true);
+check('sup:整块换掉(换工作)→ 不是改口模板',
+  judgeSupersede('用户想换工作,正在投简历', '用户已经换到新公司了', 0.6).sameTemplate === false);
+check('sup:分数不够时两个标记都为 false',
+  (() => { const j = judgeSupersede('用户住在杭州', '用户养了一只猫', 0.6); return !j.sameTemplate && !j.sameFact; })());
+
+const csSup = new ConsolidatedStore(fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-sup-')), logger);
+csSup.load();
+csSup.upsert({ ...supOld });
+csSup.upsert({
+  id: 'new_1', userKey: null, type: 'stable-fact', content: '用户住在成都',
+  sourceIds: ['r1'], confidence: 0.6, status: 'active', createdAt: nowMs, updatedAt: nowMs, touchCount: 0,
+});
+csSup.addLink('old_1', 'c_other', '旧联想');
+check('sup:取代落盘为 superseded', csSup.supersedeMany([['new_1', 'old_1']], nowMs) === 1 &&
+  csSup.get('old_1')?.status === 'superseded' && csSup.get('old_1')?.supersededBy === 'new_1');
+check('sup:被取代的条目不再重复取代', csSup.supersedeMany([['new_1', 'old_1']], nowMs) === 0);
+check('sup:联想边迁到新条目', csSup.strongLinks('new_1', 1, 5).some((l) => l.id === 'c_other') &&
+  csSup.strongLinks('old_1', 1, 5).length === 0);
+check('sup:被取代后 touch 不再复活', (() => {
+  csSup.touch('old_1', nowMs, { confidenceThreshold: 0.4, dormantDays: 30 });
+  return csSup.get('old_1')?.status === 'superseded' && csSup.get('old_1')?.touchCount === 0;
+})());
+check('sup:用户 edit 可翻案(回到 active 并清掉取代指针)', (() => {
+  const m = csSup.revise('old_1', '用户又搬回杭州', { confidenceThreshold: 0.4, dormantDays: 30 });
+  return m?.status === 'active' && m?.supersededBy === undefined;
+})());
+
+// 注入判定:superseded 哪怕与新事实高度相似也绝不复活
+const supEv = ['用户住在成都'];
+check('sup:superseded 永不注入',
+  decideInjection({ ...supOld, status: 'superseded' }, supEv, { reviveSimilarity: 0.15, maxInject: 2 }, 0).inject === false);
+check('sup:superseded 即使话题相似也不唤醒',
+  decideInjection({ ...supOld, status: 'superseded' }, supEv, { reviveSimilarity: 0.15, maxInject: 2 }, 0).revived === false);
+check('sup:active 直接注入',
+  decideInjection({ ...supOld, status: 'active' }, supEv, { reviveSimilarity: 0.15, maxInject: 2 }, 0).inject === true);
+check('sup:dormant 无人提起则不碰',
+  decideInjection({ ...supOld, status: 'dormant' }, ['用户养了一只黑猫'], { reviveSimilarity: 0.5, maxInject: 2 }, 0).reason === 'dormant');
+check('sup:dormant 被提起则唤醒并注入',
+  decideInjection({ ...supOld, status: 'dormant' }, supEv, { reviveSimilarity: 0.15, maxInject: 2 }, 0).reason === 'revived');
+check('sup:唤醒超过上限仍生效但不注入',
+  decideInjection({ ...supOld, status: 'dormant' }, supEv, { reviveSimilarity: 0.15, maxInject: 2 }, 2).reason === 'revived-capped');
+
+// ── 2f-3. 边权衰减 + 两跳扩散 ────────────────────────────────
+const { effectiveWeight, LINK_HALF_LIFE_DAYS } = await import(`${distUrl}consolidated.js`);
+check('edge:半衰期常量为 30 天', LINK_HALF_LIFE_DAYS === 30);
+check('edge:刚强化的边不衰减',
+  effectiveWeight({ weight: 4, label: 'x', at: nowMs }, nowMs) === 4);
+check('edge:一个半衰期后权重减半',
+  Math.abs(effectiveWeight({ weight: 4, label: 'x', at: nowMs - 30 * 86400000 }, nowMs) - 2) < 0.01);
+check('edge:两个半衰期后剩四分之一',
+  Math.abs(effectiveWeight({ weight: 4, label: 'x', at: nowMs - 60 * 86400000 }, nowMs) - 1) < 0.01);
+check('edge:无时间戳的老边不凭空扣分',
+  effectiveWeight({ weight: 3, label: 'x' }, nowMs) === 3);
+
+const dgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-dg-'));
+const dg = new ConsolidatedStore(dgDir, logger);
+dg.load();
+for (const id of ['a', 'b', 'c', 'd']) {
+  dg.upsert({
+    id, userKey: null, type: 'stable-fact', content: id, sourceIds: [],
+    confidence: 0.6, status: 'active', createdAt: nowMs, updatedAt: nowMs, touchCount: 0,
+  });
+}
+dg.addLink('a', 'b', '同轮巩固', nowMs);
+dg.addLink('a', 'b', '同轮巩固', nowMs);
+dg.addLink('b', 'c', '同轮巩固', nowMs);
+dg.addLink('b', 'c', '同轮巩固', nowMs);
+dg.addLink('c', 'd', '同轮巩固', nowMs); // 单次弱边:不该扩散出来
+const dOpts = { hop1Min: 2, hop2Min: 2, minScore: 1, maxHop1: 2, maxHop2: 1 };
+const dgOut = dg.diffuse('a', dOpts, nowMs);
+check('diffuse:一跳带出强共现条目', dgOut.some((x) => x.id === 'b' && x.hop === 1));
+check('diffuse:两跳带出强链的强链', dgOut.some((x) => x.id === 'c' && x.hop === 2));
+check('diffuse:弱边不参与扩散', dgOut.every((x) => x.id !== 'd'));
+check('diffuse:不重复返回起点', dgOut.every((x) => x.id !== 'a'));
+check('diffuse:结果不重复', new Set(dgOut.map((x) => x.id)).size === dgOut.length);
+// 陈旧的边即使 weight 高,也会因衰减掉到门槛之下
+dg.addLink('a', 'd', '同轮巩固', nowMs);
+dg.addLink('a', 'd', '同轮巩固', nowMs);
+check('diffuse:陈旧强边衰减后掉出扩散',
+  dg.diffuse('a', dOpts, nowMs + 90 * 86400000).every((x) => x.id !== 'd'));
+check('diffuse:新边在当期仍然生效',
+  dg.diffuse('a', dOpts, nowMs).some((x) => x.id === 'd'));
+check('edge:strongLinks 暴露有效权重',
+  dg.strongLinks('a', 1, 5, nowMs).every((l) => typeof l.effective === 'number' && l.effective <= l.weight));
+fs.rmSync(dgDir, { recursive: true, force: true });
 // 重启加载(原子落盘后重读)
 const cs2 = new ConsolidatedStore(csDir, logger);
 cs2.load();
@@ -380,6 +539,56 @@ cs.markRun(nowMs);
 check('cons:markRun 记录运行', cs.metaInfo().runCount === 1);
 fs.rmSync(cluDir, { recursive: true, force: true });
 fs.rmSync(csDir, { recursive: true, force: true });
+
+// ── 2f-4. 置信度动态化:重复观察强化 ─────────────────────────
+// 同一件事又被观察到 → 强化旧条目,而不是攒出一堆近义重复。
+const { findTwin, reinforceMany: _rm, REINFORCE_CONFIDENCE_GAIN } =
+  await import(`${distUrl}consolidated.js`);
+check('tw:强化增量高于召回命中', REINFORCE_CONFIDENCE_GAIN > 0.05);
+const twinPool = [
+  { ...supOld, id: 'twin_1', content: '用户住在杭州', status: 'active' },
+  { ...supOld, id: 'twin_2', content: '用户养了一只叫煤球的猫', type: 'preference', status: 'active' },
+];
+check('tw:同一句话再观察一次 → 命中已有条目',
+  findTwin('用户住在杭州', 'stable-fact', null, twinPool, 0.85)?.id === 'twin_1');
+check('tw:换了个值(改口)不算重复观察',
+  findTwin('用户住在成都', 'stable-fact', null, twinPool, 0.85) === undefined);
+check('tw:不跨 type 匹配',
+  findTwin('用户住在杭州', 'preference', null, twinPool, 0.85) === undefined);
+check('tw:不跨用户匹配',
+  findTwin('用户住在杭州', 'stable-fact', 'im:qq:u_bob', twinPool, 0.85) === undefined);
+check('tw:被取代的旧话不能靠重复出现翻案',
+  findTwin('用户住在杭州', 'stable-fact', null, [{ ...supOld, status: 'superseded' }], 0.85) === undefined);
+
+const rfDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-rf-'));
+const rf = new ConsolidatedStore(rfDir, logger);
+rf.load();
+const rfOpts = { confidenceThreshold: 0.4, dormantDays: 30 };
+rf.upsert({
+  id: 'rf_1', userKey: null, type: 'stable-fact', content: '用户住在杭州',
+  sourceIds: ['r1'], confidence: 0.35, status: 'dormant',
+  createdAt: nowMs - 40 * 86400000, updatedAt: nowMs - 40 * 86400000, touchCount: 0,
+});
+check('rf:重复观察抬高置信度', (() => {
+  rf.reinforceMany(['rf_1'], nowMs, rfOpts);
+  return (rf.get('rf_1')?.confidence ?? 0) > 0.35;
+})());
+check('rf:重复观察让休眠条目回到 active', rf.get('rf_1')?.status === 'active');
+check('rf:置信度封顶 0.95', (() => {
+  for (let i = 0; i < 20; i += 1) rf.reinforceMany(['rf_1'], nowMs, rfOpts);
+  return rf.get('rf_1')?.confidence === 0.95;
+})());
+rf.upsert({
+  id: 'rf_dead', userKey: null, type: 'stable-fact', content: '用户住在杭州',
+  sourceIds: ['r1'], confidence: 0.6, status: 'superseded', supersededBy: 'rf_1',
+  createdAt: nowMs, updatedAt: nowMs, touchCount: 0,
+});
+check('rf:被取代的条目不会被强化复活', (() => {
+  rf.reinforceMany(['rf_dead'], nowMs, rfOpts);
+  return rf.get('rf_dead')?.status === 'superseded' && rf.get('rf_dead')?.confidence === 0.6;
+})());
+check('rf:不存在的 id 安全跳过', rf.reinforceMany(['nope'], nowMs, rfOpts) === 0);
+fs.rmSync(rfDir, { recursive: true, force: true });
 
 // ── 2g. 巩固层交互命令 ─────────────────────────────────────────
 console.log('[2g] 巩固层交互命令');

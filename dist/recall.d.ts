@@ -17,7 +17,7 @@ import type { RecallRebuildConfig } from './config.js';
 import type { LoggerLike, MemoryRecord, MemoryStore } from './store.js';
 import { type NamespaceStore } from './namespace.js';
 import type { RebuildLogger } from './observability.js';
-import type { ConsolidatedStore } from './consolidated.js';
+import { type ConsolidatedStore } from './consolidated.js';
 interface MsgLike {
     source?: {
         kind?: string;

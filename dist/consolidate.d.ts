@@ -22,6 +22,12 @@ export interface ConsolidationResult {
     entries: number;
     /** 进入 dormant 的条目数。 */
     decayed: number;
+    /** 从 dormant 唤醒(恢复 active)的条目数。 */
+    revived: number;
+    /** 被新记忆取代(标记 superseded)的旧条目数。 */
+    superseded: number;
+    /** 与已有条目「同一件事又观察了一次」而被强化(而非新建)的次数。 */
+    reinforced: number;
     /** 处理前的 pending 碎片数。 */
     pending: number;
 }

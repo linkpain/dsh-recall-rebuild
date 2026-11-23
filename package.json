@@ -1,6 +1,6 @@
 {
   "name": "dsh-recall-rebuild",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public",
@@ -34,7 +34,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node scripts/verify.mjs",
     "test:eval": "node scripts/eval-recall.mjs",
-    "test:all": "npm run test && npm run test:eval",
+    "test:consolidate": "node scripts/eval-consolidate.mjs",
+    "test:all": "npm run test && npm run test:eval && npm run test:consolidate",
     "prepack": "npm run build"
   },
   "engines": {
@@ -73,7 +74,7 @@
     "@deepseek-ai/cordis": "^4.0.4",
     "@deepseek-ai/dsh-home-paths": "0.2.1-rc.3",
     "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
-    "@deepseek-ai/schemastery": "^3.18.4",
+    "@deepseek-ai/schemastery": "~3.18.5",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
   }

@@ -2,6 +2,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { rebuildMemory } from './rebuild.js';
 import { decayFactor } from './store.js';
 import { extractUserKey } from './namespace.js';
+import { decideInjection } from './consolidated.js';
 /** 消息文本提取(text 块拼接),用于召回查询。 */
 function blocksToText(content) {
     if (!Array.isArray(content))
@@ -129,14 +130,31 @@ function mergeConsolidated(memories, consolidated, userKey, cfg, logger) {
         const extra = [];
         // 本轮命中的巩固条目 id:收集起来一次性落盘(见 ConsolidatedStore.touchMany)
         const touched = [];
+        // 休眠条目的复活线索:与当前召回碎片足够相似 = 它「又被提起了」。
+        // 缺了这一步,dormant 就是单向的 —— 召回侧只遍历 active,休眠条目永远拿不到
+        // touch,也就永远醒不过来。相似度用零依赖的字符 2-gram Jaccard,与聚类同源。
+        const evidence = memories.map((m) => m.content).filter(Boolean);
+        // 休眠条目本轮最多附带注入几条:本轮已有真实召回结果,再塞一堆
+        // "话题沾边"的旧条目只会稀释重建质量。唤醒本身不受这个上限限制。
+        const REVIVE_MAX_INJECT = 2;
+        const revivedIds = [];
         for (const m of consolidated.list()) {
-            if (m.status !== 'active')
-                continue;
             if (m.userKey !== null && m.userKey !== userKey)
                 continue; // 归属他人(当前用户存在时)
             if (cfg.user.isolation === 'strict' && m.userKey === null && userKey !== null)
                 continue;
+            // 状态判定集中在 decideInjection:superseded 永不注入也永不唤醒,
+            // dormant 要靠「又被提起」的证据复活,active 直接进。
+            const decision = decideInjection(m, evidence, { reviveSimilarity: cfg.consolidate.reviveSimilarity, maxInject: REVIVE_MAX_INJECT }, revivedIds.length);
+            if (decision.reason === 'superseded' || decision.reason === 'dormant')
+                continue;
+            if (decision.revived)
+                revivedIds.push(m.id);
+            // touch 只对「本轮真的被用上」的条目:它会抬 confidence 并刷新 lastRecalledAt,
+            // 对沉睡条目就等于唤醒 —— 所以绝不能无差别 touch 整份列表。
             touched.push(m.id);
+            if (!decision.inject)
+                continue;
             extra.push({
                 id: m.id,
                 content: m.content,
@@ -146,19 +164,21 @@ function mergeConsolidated(memories, consolidated, userKey, cfg, logger) {
                 priority: 10, // 高置信稳定记忆优先于细节碎片
                 timestampStr: new Date(m.updatedAt).toISOString().slice(0, 10),
             });
-            // 联想扩散:强关联(weight ≥ 2)的其他主题最多带 2 条
-            const linked = consolidated.strongLinks(m.id, 2, 2);
+            // 联想扩散:一跳(强共现)最多 2 条,二跳(强链的强链)最多 1 条。
+            // 边权带半衰期衰减,陈旧联想不会长期霸占扩散名额。
+            const linked = consolidated.diffuse(m.id, { hop1Min: 2, hop2Min: 2, minScore: 1, maxHop1: 2, maxHop2: 1 }, now);
             for (const l of linked) {
                 const lm = consolidated.get(l.id);
+                // 联想只带 active:被取代的旧事实不能借「联想」还魂
                 if (!lm || lm.status !== 'active')
                     continue;
                 extra.push({
                     id: lm.id,
                     content: lm.content,
                     type: lm.type,
-                    sceneName: `联想:${l.weight}`,
+                    sceneName: l.hop === 1 ? `联想:${l.score.toFixed(1)}` : `二跳联想:${l.score.toFixed(1)}`,
                     family: '',
-                    priority: 6,
+                    priority: l.hop === 1 ? 6 : 4,
                     timestampStr: new Date(lm.updatedAt).toISOString().slice(0, 10),
                 });
             }
@@ -166,6 +186,9 @@ function mergeConsolidated(memories, consolidated, userKey, cfg, logger) {
         // 一次写入代替「每条一次全量 JSON 重写」
         if (touched.length > 0)
             consolidated.touchMany(touched, now, forgetOpts);
+        if (revivedIds.length > 0) {
+            logger.info(`[recall-rebuild] 唤醒休眠记忆 ${revivedIds.length} 条(本轮碎片与其高度相关)`);
+        }
         // 排序分 = 基础优先级 × 时效衰减系数(老记忆最多损失一半分,永不沉底)
         const score = (m) => m.priority * decayFactor(m.timestampStr, now);
         return [...memories, ...extra]

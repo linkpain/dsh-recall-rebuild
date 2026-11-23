@@ -75,8 +75,11 @@ export function formatMemoryList(
     .filter((m) => m.status === 'active')
     .sort((a, b) => b.confidence - a.confidence || b.touchCount - a.touchCount);
   const dormant = mems.filter((m) => m.status === 'dormant');
+  const superseded = mems.filter((m) => m.status === 'superseded');
   const lines: string[] = [];
-  lines.push(`长期记忆(巩固层): active ${active.length} / dormant ${dormant.length}`);
+  lines.push(
+    `长期记忆(巩固层): active ${active.length} / dormant ${dormant.length} / superseded ${superseded.length}`,
+  );
   for (const m of active) {
     const owner = m.userKey ? ` [${m.userKey}]` : '';
     lines.push(`• ${m.id}${owner} [${TYPE_LABEL[m.type]}] 置信${(m.confidence * 100).toFixed(0)}% · 命中${m.touchCount} · 更新${new Date(m.updatedAt).toISOString().slice(0, 10)}`);
@@ -85,6 +88,11 @@ export function formatMemoryList(
   for (const m of dormant) {
     const owner = m.userKey ? ` [${m.userKey}]` : '';
     lines.push(`[dormant 已降权] ${m.id}${owner} [${TYPE_LABEL[m.type]}] ${m.content}`);
+  }
+  for (const m of superseded) {
+    const owner = m.userKey ? ` [${m.userKey}]` : '';
+    const by = m.supersededBy ? ` → 被 ${m.supersededBy} 取代` : '';
+    lines.push(`[superseded 已失效]${by} ${m.id}${owner} [${TYPE_LABEL[m.type]}] ${m.content}`);
   }
   if (mems.length === 0) lines.push('(巩固层还没有条目——多聊几轮后,碎片会在空闲时沉淀为长期记忆)');
   if (!opts.all && opts.userKey !== null) {
@@ -164,7 +172,9 @@ export function registerRecallRebuildCommands(
               kind: 'success' as const,
               text:
                 `睡眠巩固已执行:处理 pending ${result.pending} 条,` +
-                `产出 ${result.entries} 条新记忆,${result.decayed} 条进入 dormant。`,
+                `产出 ${result.entries} 条新记忆,${result.decayed} 条进入 dormant,` +
+                `${result.revived} 条唤醒,${result.superseded} 条被新记忆取代,` +
+                `${result.reinforced} 次重复观察强化。`,
             };
           }
           case 'list': {
@@ -181,10 +191,11 @@ export function registerRecallRebuildCommands(
             if (!m) return { kind: 'error' as const, text: `找不到记忆 ${id}。` };
             const visible = visibleMemories(consolidated, userKey, cfg.user.isolation, false).some((x) => x.id === id);
             if (!visible) return { kind: 'error' as const, text: `记忆 ${id} 不在当前用户的可见范围内。` };
-            consolidated.upsert({
-              ...m,
-              content: content.slice(0, cfg.consolidate.maxOutputChars),
-              updatedAt: Date.now(),
+            // 走 revise 而不是裸 upsert:用户亲口改写的记忆要抬置信度并回到 active,
+            // 否则一条低置信的休眠条目「改完还是休眠」,用户等于白改。
+            consolidated.revise(id, content.slice(0, cfg.consolidate.maxOutputChars), {
+              confidenceThreshold: cfg.consolidate.confidenceThreshold,
+              dormantDays: cfg.consolidate.dormantDays,
             });
             return { kind: 'success' as const, text: `已更新记忆 ${id}。` };
           }

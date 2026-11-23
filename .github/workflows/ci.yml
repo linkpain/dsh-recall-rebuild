@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm install --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Runtime verification
+        run: node scripts/verify.mjs
+      - name: Chinese recall eval (recall@5 gate)
+        run: node scripts/eval-recall.mjs
+      - name: Consolidation layer eval (supersede / twin / revival / diffusion)
+        run: node scripts/eval-consolidate.mjs

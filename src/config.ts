@@ -111,6 +111,25 @@ export interface ConsolidateOptions {
   confidenceThreshold: number;
   /** 多少天未命中(且低置信)进入 dormant。 */
   dormantDays: number;
+  /**
+   * 休眠条目的复活阈值:当前召回碎片与它的相似度 ≥ 该值 → 视为「又被提起」,唤醒。
+   * 0.15 比 clusterThreshold(0.25)松 —— 复活只需要「话题沾边」,
+   * 而巩固聚类要求「同一件事」,两者标准本就不该一样。
+   */
+  reviveSimilarity: number;
+  /**
+   * 改口覆盖阈值(字符子序列比例,非 Jaccard):新条目与旧条目「几乎同一句话、
+   * 只差一个值」时把旧的标记为 superseded。0.6 刻意高于 clusterThreshold ——
+   * 误判覆盖会藏起一条仍然为真的记忆,代价比漏判高。
+   */
+  supersedeThreshold: number;
+  /**
+   * 重复观察强化阈值(字符子序列比例)。新观察与已有条目「几乎是同一句话」时,
+   * 不新建条目,而是把那条已有记忆的置信度上调。0.85 刻意高于 supersedeThreshold ——
+   * 改口只差一个值就算同一件事,强化则要求几乎一字不差,否则「用户住在成都」
+   * 会被当成「用户住在杭州」的重复观察,新事实永远进不来。
+   */
+  reinforceThreshold: number;
 }
 
 export interface RecallRebuildConfig {
@@ -184,6 +203,9 @@ export const recallRebuildSchema = Schema.object({
     timeoutMs: Schema.number().min(1000).max(120000).default(20000),
     confidenceThreshold: Schema.number().min(0.1).max(0.9).default(0.4),
     dormantDays: Schema.number().min(3).max(365).default(30),
+    reviveSimilarity: Schema.number().min(0.05).max(0.9).default(0.15),
+    supersedeThreshold: Schema.number().min(0.3).max(0.95).default(0.6),
+    reinforceThreshold: Schema.number().min(0.5).max(0.99).default(0.85),
   }).default({}),
   commands: Schema.object({
     enabled: Schema.boolean().default(true),

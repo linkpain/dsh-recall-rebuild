@@ -55,6 +55,9 @@ export const recallRebuildSchema = Schema.object({
         timeoutMs: Schema.number().min(1000).max(120000).default(20000),
         confidenceThreshold: Schema.number().min(0.1).max(0.9).default(0.4),
         dormantDays: Schema.number().min(3).max(365).default(30),
+        reviveSimilarity: Schema.number().min(0.05).max(0.9).default(0.15),
+        supersedeThreshold: Schema.number().min(0.3).max(0.95).default(0.6),
+        reinforceThreshold: Schema.number().min(0.5).max(0.99).default(0.85),
     }).default({}),
     commands: Schema.object({
         enabled: Schema.boolean().default(true),

@@ -41,93 +41,314 @@ export interface QueryOptions {
     /** 召回查询字符上限。 */
     maxChars: number;
 }
+/** IM 用户级命名空间隔离选项。 */
+export interface UserIsolationOptions {
+    /**
+     * 隔离模式:
+     * - 'off':不过滤(所有用户共享全部记忆,旧行为);
+     * - 'auto':剔除「明确属于其他用户」的记忆,无主记忆默认可见(命中后归位);
+     * - 'strict':只注入「已归属当前用户」的记忆,新用户零记忆起步(随会话命中逐渐归位)。
+     * 桌面直接对话(识别不到 IM 用户)时任何模式都不过滤。
+     */
+    isolation: 'off' | 'auto' | 'strict';
+    /** 归属索引目录;空 = <DSH_HOME>/recall-rebuild/namespaces(缺省 ~/.dsh/...)。 */
+    isolationDir: string;
+    /** 覆盖内置 <dsh_im_source> 解析正则(不同桥接插件字段不同时可自定义);空 = 内置。 */
+    sourceTagPattern: string;
+}
+/** 重建质量可观测选项。 */
+export interface ObservabilityOptions {
+    /** 每轮重建审计日志开关(JSON Lines,按天滚动)。 */
+    logEnabled: boolean;
+    /** 日志目录;空 = <DSH_HOME>/recall-rebuild/logs。 */
+    logDir: string;
+    /** 日志是否记录原始检索碎片(与重建片段同屏对比);false 只记重建结果。 */
+    includeFragments: boolean;
+    /** 是否写统计文件 stats.json(30s 节流)。 */
+    statsEnabled: boolean;
+}
+/** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
+export interface CommandsOptions {
+    /** 命令总开关;false = 不注册任何命令。 */
+    enabled: boolean;
+    /** 注册的命令名(不含前导 /);与其它插件冲突时改名。 */
+    name: string;
+}
+/** 睡眠巩固(长期记忆子系统)选项。 */
+export interface ConsolidateOptions {
+    /** 巩固总开关。 */
+    enabled: boolean;
+    /** 巩固层目录;空 = <DSH_HOME>/recall-rebuild/consolidated。 */
+    dir: string;
+    /** 待巩固碎片累积达到多少条才触发一次巩固。 */
+    minFragments: number;
+    /** 距上次巩固的最短间隔(ms);防止巩固过于频繁。 */
+    minIntervalMs: number;
+    /** 定时检查间隔(ms)。 */
+    checkIntervalMs: number;
+    /** 单次巩固最多处理的碎片条数。 */
+    maxFragmentsPerRun: number;
+    /** 聚类相似度阈值(0-1);同主题碎片 ≥ 阈值归为一簇。 */
+    clusterThreshold: number;
+    /** 单簇最多碎片条数。 */
+    maxCluster: number;
+    /** 单条巩固输出字符上限。 */
+    maxOutputChars: number;
+    /** 巩固调用温度(巩固要稳,默认低于重建)。 */
+    temperature: number;
+    /** 巩固调用输出 token 上限。 */
+    maxTokens: number;
+    /** 单簇巩固超时(ms);离线任务可放宽。 */
+    timeoutMs: number;
+    /** 遗忘阈值:置信度低于它且长期未命中 → dormant(召回降权)。 */
+    confidenceThreshold: number;
+    /** 多少天未命中(且低置信)进入 dormant。 */
+    dormantDays: number;
+    /**
+     * 休眠条目的复活阈值:当前召回碎片与它的相似度 ≥ 该值 → 视为「又被提起」,唤醒。
+     * 0.15 比 clusterThreshold(0.25)松 —— 复活只需要「话题沾边」,
+     * 而巩固聚类要求「同一件事」,两者标准本就不该一样。
+     */
+    reviveSimilarity: number;
+    /**
+     * 改口覆盖阈值(字符子序列比例,非 Jaccard):新条目与旧条目「几乎同一句话、
+     * 只差一个值」时把旧的标记为 superseded。0.6 刻意高于 clusterThreshold ——
+     * 误判覆盖会藏起一条仍然为真的记忆,代价比漏判高。
+     */
+    supersedeThreshold: number;
+    /**
+     * 重复观察强化阈值(字符子序列比例)。新观察与已有条目「几乎是同一句话」时,
+     * 不新建条目,而是把那条已有记忆的置信度上调。0.85 刻意高于 supersedeThreshold ——
+     * 改口只差一个值就算同一件事,强化则要求几乎一字不差,否则「用户住在成都」
+     * 会被当成「用户住在杭州」的重复观察,新事实永远进不来。
+     */
+    reinforceThreshold: number;
+}
 export interface RecallRebuildConfig {
     /** 总开关。 */
     enabled: boolean;
-    /** 记忆库目录;空 = $DSH_HOME/memory(默认)。 */
+    /** prime-memory 数据目录;空 = $DSH_HOME/memory(默认)。 */
     dataDir: string;
-    /** 记忆来源:auto(自动探测,当前等价 prime)| prime(只读 dsh-prime-memory 库)。 */
-    source: 'auto' | 'prime';
+    /**
+     * 记忆来源:
+     * - 'auto':自动探测 —— prime-memory 库存在则读它,否则依次尝试 dsh-memory(JSON)与 memory-palace(Markdown);
+     * - 'prime':只读 dsh-prime-memory 的 SQLite 库($dataDir/memory.db);
+     * - 'dsh-memory':只读 @max-null/dsh-memory 的 JSON 记忆(~/.dsh/storages/memory.json 与 <cwd>/.dsh/storages/);
+     * - 'palace':只读 dsh-memory-palace 的 Markdown 文件(~/.deepseek-harness/MEMORY.md 与 <cwd>/.deepseek-harness/memory/)。
+     */
+    source: 'auto' | 'prime' | 'dsh-memory' | 'palace';
     rebuild: RebuildOptions;
     inject: InjectOptions;
     query: QueryOptions;
+    user: UserIsolationOptions;
+    observability: ObservabilityOptions;
+    consolidate: ConsolidateOptions;
+    commands: CommandsOptions;
 }
-export declare const recallRebuildSchema: import("@deepseek-ai/schemastery").default<import("@deepseek-ai/schemastery").Schemastery.ObjectS<NoInfer<{
-    enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
-    dataDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
-    source: import("@deepseek-ai/schemastery").default<"auto" | "prime", "auto" | "prime", "defined">;
-    rebuild: import("@deepseek-ai/schemastery").default<import("@deepseek-ai/schemastery").Schemastery.ObjectS<NoInfer<{
-        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
-        maxResults: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxMemoryChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxTotalChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxOutputChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        temperature: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxTokens: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        timeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-    }>>, import("@deepseek-ai/schemastery").Schemastery.ObjectT<NoInfer<{
-        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
-        maxResults: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxMemoryChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxTotalChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxOutputChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        temperature: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxTokens: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        timeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
+    enabled: Schema<boolean, boolean, "defined">;
+    dataDir: Schema<string, string, "defined">;
+    source: Schema<"auto" | "prime" | "dsh-memory" | "palace", "auto" | "prime" | "dsh-memory" | "palace", "defined">;
+    rebuild: Schema<Schemastery.ObjectS<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        maxResults: Schema<number, number, "defined">;
+        maxMemoryChars: Schema<number, number, "defined">;
+        maxTotalChars: Schema<number, number, "defined">;
+        maxOutputChars: Schema<number, number, "defined">;
+        temperature: Schema<number, number, "defined">;
+        maxTokens: Schema<number, number, "defined">;
+        timeoutMs: Schema<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        maxResults: Schema<number, number, "defined">;
+        maxMemoryChars: Schema<number, number, "defined">;
+        maxTotalChars: Schema<number, number, "defined">;
+        maxOutputChars: Schema<number, number, "defined">;
+        temperature: Schema<number, number, "defined">;
+        maxTokens: Schema<number, number, "defined">;
+        timeoutMs: Schema<number, number, "defined">;
     }>>, "defined">;
-    inject: import("@deepseek-ai/schemastery").default<import("@deepseek-ai/schemastery").Schemastery.ObjectS<NoInfer<{
-        strategy: import("@deepseek-ai/schemastery").default<"replace" | "append", "replace" | "append", "defined">;
-        maxChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        includeSources: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
-    }>>, import("@deepseek-ai/schemastery").Schemastery.ObjectT<NoInfer<{
-        strategy: import("@deepseek-ai/schemastery").default<"replace" | "append", "replace" | "append", "defined">;
-        maxChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        includeSources: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+    inject: Schema<Schemastery.ObjectS<NoInfer<{
+        strategy: Schema<"replace" | "append", "replace" | "append", "defined">;
+        maxChars: Schema<number, number, "defined">;
+        includeSources: Schema<boolean, boolean, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        strategy: Schema<"replace" | "append", "replace" | "append", "defined">;
+        maxChars: Schema<number, number, "defined">;
+        includeSources: Schema<boolean, boolean, "defined">;
     }>>, "defined">;
-    query: import("@deepseek-ai/schemastery").default<import("@deepseek-ai/schemastery").Schemastery.ObjectS<NoInfer<{
-        tailMessages: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-    }>>, import("@deepseek-ai/schemastery").Schemastery.ObjectT<NoInfer<{
-        tailMessages: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+    query: Schema<Schemastery.ObjectS<NoInfer<{
+        tailMessages: Schema<number, number, "defined">;
+        maxChars: Schema<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        tailMessages: Schema<number, number, "defined">;
+        maxChars: Schema<number, number, "defined">;
     }>>, "defined">;
-}>>, import("@deepseek-ai/schemastery").Schemastery.ObjectT<NoInfer<{
-    enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
-    dataDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
-    source: import("@deepseek-ai/schemastery").default<"auto" | "prime", "auto" | "prime", "defined">;
-    rebuild: import("@deepseek-ai/schemastery").default<import("@deepseek-ai/schemastery").Schemastery.ObjectS<NoInfer<{
-        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
-        maxResults: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxMemoryChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxTotalChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxOutputChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        temperature: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxTokens: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        timeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-    }>>, import("@deepseek-ai/schemastery").Schemastery.ObjectT<NoInfer<{
-        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
-        maxResults: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxMemoryChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxTotalChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxOutputChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        temperature: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxTokens: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        timeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+    user: Schema<Schemastery.ObjectS<NoInfer<{
+        isolation: Schema<"off" | "auto" | "strict", "off" | "auto" | "strict", "defined">;
+        isolationDir: Schema<string, string, "defined">;
+        sourceTagPattern: Schema<string, string, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        isolation: Schema<"off" | "auto" | "strict", "off" | "auto" | "strict", "defined">;
+        isolationDir: Schema<string, string, "defined">;
+        sourceTagPattern: Schema<string, string, "defined">;
     }>>, "defined">;
-    inject: import("@deepseek-ai/schemastery").default<import("@deepseek-ai/schemastery").Schemastery.ObjectS<NoInfer<{
-        strategy: import("@deepseek-ai/schemastery").default<"replace" | "append", "replace" | "append", "defined">;
-        maxChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        includeSources: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
-    }>>, import("@deepseek-ai/schemastery").Schemastery.ObjectT<NoInfer<{
-        strategy: import("@deepseek-ai/schemastery").default<"replace" | "append", "replace" | "append", "defined">;
-        maxChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        includeSources: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+    observability: Schema<Schemastery.ObjectS<NoInfer<{
+        logEnabled: Schema<boolean, boolean, "defined">;
+        logDir: Schema<string, string, "defined">;
+        includeFragments: Schema<boolean, boolean, "defined">;
+        statsEnabled: Schema<boolean, boolean, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        logEnabled: Schema<boolean, boolean, "defined">;
+        logDir: Schema<string, string, "defined">;
+        includeFragments: Schema<boolean, boolean, "defined">;
+        statsEnabled: Schema<boolean, boolean, "defined">;
     }>>, "defined">;
-    query: import("@deepseek-ai/schemastery").default<import("@deepseek-ai/schemastery").Schemastery.ObjectS<NoInfer<{
-        tailMessages: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-    }>>, import("@deepseek-ai/schemastery").Schemastery.ObjectT<NoInfer<{
-        tailMessages: import("@deepseek-ai/schemastery").default<number, number, "defined">;
-        maxChars: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+    consolidate: Schema<Schemastery.ObjectS<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        dir: Schema<string, string, "defined">;
+        minFragments: Schema<number, number, "defined">;
+        minIntervalMs: Schema<number, number, "defined">;
+        checkIntervalMs: Schema<number, number, "defined">;
+        maxFragmentsPerRun: Schema<number, number, "defined">;
+        clusterThreshold: Schema<number, number, "defined">;
+        maxCluster: Schema<number, number, "defined">;
+        maxOutputChars: Schema<number, number, "defined">;
+        temperature: Schema<number, number, "defined">;
+        maxTokens: Schema<number, number, "defined">;
+        timeoutMs: Schema<number, number, "defined">;
+        confidenceThreshold: Schema<number, number, "defined">;
+        dormantDays: Schema<number, number, "defined">;
+        reviveSimilarity: Schema<number, number, "defined">;
+        supersedeThreshold: Schema<number, number, "defined">;
+        reinforceThreshold: Schema<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        dir: Schema<string, string, "defined">;
+        minFragments: Schema<number, number, "defined">;
+        minIntervalMs: Schema<number, number, "defined">;
+        checkIntervalMs: Schema<number, number, "defined">;
+        maxFragmentsPerRun: Schema<number, number, "defined">;
+        clusterThreshold: Schema<number, number, "defined">;
+        maxCluster: Schema<number, number, "defined">;
+        maxOutputChars: Schema<number, number, "defined">;
+        temperature: Schema<number, number, "defined">;
+        maxTokens: Schema<number, number, "defined">;
+        timeoutMs: Schema<number, number, "defined">;
+        confidenceThreshold: Schema<number, number, "defined">;
+        dormantDays: Schema<number, number, "defined">;
+        reviveSimilarity: Schema<number, number, "defined">;
+        supersedeThreshold: Schema<number, number, "defined">;
+        reinforceThreshold: Schema<number, number, "defined">;
+    }>>, "defined">;
+    commands: Schema<Schemastery.ObjectS<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        name: Schema<string, string, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        name: Schema<string, string, "defined">;
+    }>>, "defined">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    enabled: Schema<boolean, boolean, "defined">;
+    dataDir: Schema<string, string, "defined">;
+    source: Schema<"auto" | "prime" | "dsh-memory" | "palace", "auto" | "prime" | "dsh-memory" | "palace", "defined">;
+    rebuild: Schema<Schemastery.ObjectS<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        maxResults: Schema<number, number, "defined">;
+        maxMemoryChars: Schema<number, number, "defined">;
+        maxTotalChars: Schema<number, number, "defined">;
+        maxOutputChars: Schema<number, number, "defined">;
+        temperature: Schema<number, number, "defined">;
+        maxTokens: Schema<number, number, "defined">;
+        timeoutMs: Schema<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        maxResults: Schema<number, number, "defined">;
+        maxMemoryChars: Schema<number, number, "defined">;
+        maxTotalChars: Schema<number, number, "defined">;
+        maxOutputChars: Schema<number, number, "defined">;
+        temperature: Schema<number, number, "defined">;
+        maxTokens: Schema<number, number, "defined">;
+        timeoutMs: Schema<number, number, "defined">;
+    }>>, "defined">;
+    inject: Schema<Schemastery.ObjectS<NoInfer<{
+        strategy: Schema<"replace" | "append", "replace" | "append", "defined">;
+        maxChars: Schema<number, number, "defined">;
+        includeSources: Schema<boolean, boolean, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        strategy: Schema<"replace" | "append", "replace" | "append", "defined">;
+        maxChars: Schema<number, number, "defined">;
+        includeSources: Schema<boolean, boolean, "defined">;
+    }>>, "defined">;
+    query: Schema<Schemastery.ObjectS<NoInfer<{
+        tailMessages: Schema<number, number, "defined">;
+        maxChars: Schema<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        tailMessages: Schema<number, number, "defined">;
+        maxChars: Schema<number, number, "defined">;
+    }>>, "defined">;
+    user: Schema<Schemastery.ObjectS<NoInfer<{
+        isolation: Schema<"off" | "auto" | "strict", "off" | "auto" | "strict", "defined">;
+        isolationDir: Schema<string, string, "defined">;
+        sourceTagPattern: Schema<string, string, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        isolation: Schema<"off" | "auto" | "strict", "off" | "auto" | "strict", "defined">;
+        isolationDir: Schema<string, string, "defined">;
+        sourceTagPattern: Schema<string, string, "defined">;
+    }>>, "defined">;
+    observability: Schema<Schemastery.ObjectS<NoInfer<{
+        logEnabled: Schema<boolean, boolean, "defined">;
+        logDir: Schema<string, string, "defined">;
+        includeFragments: Schema<boolean, boolean, "defined">;
+        statsEnabled: Schema<boolean, boolean, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        logEnabled: Schema<boolean, boolean, "defined">;
+        logDir: Schema<string, string, "defined">;
+        includeFragments: Schema<boolean, boolean, "defined">;
+        statsEnabled: Schema<boolean, boolean, "defined">;
+    }>>, "defined">;
+    consolidate: Schema<Schemastery.ObjectS<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        dir: Schema<string, string, "defined">;
+        minFragments: Schema<number, number, "defined">;
+        minIntervalMs: Schema<number, number, "defined">;
+        checkIntervalMs: Schema<number, number, "defined">;
+        maxFragmentsPerRun: Schema<number, number, "defined">;
+        clusterThreshold: Schema<number, number, "defined">;
+        maxCluster: Schema<number, number, "defined">;
+        maxOutputChars: Schema<number, number, "defined">;
+        temperature: Schema<number, number, "defined">;
+        maxTokens: Schema<number, number, "defined">;
+        timeoutMs: Schema<number, number, "defined">;
+        confidenceThreshold: Schema<number, number, "defined">;
+        dormantDays: Schema<number, number, "defined">;
+        reviveSimilarity: Schema<number, number, "defined">;
+        supersedeThreshold: Schema<number, number, "defined">;
+        reinforceThreshold: Schema<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        dir: Schema<string, string, "defined">;
+        minFragments: Schema<number, number, "defined">;
+        minIntervalMs: Schema<number, number, "defined">;
+        checkIntervalMs: Schema<number, number, "defined">;
+        maxFragmentsPerRun: Schema<number, number, "defined">;
+        clusterThreshold: Schema<number, number, "defined">;
+        maxCluster: Schema<number, number, "defined">;
+        maxOutputChars: Schema<number, number, "defined">;
+        temperature: Schema<number, number, "defined">;
+        maxTokens: Schema<number, number, "defined">;
+        timeoutMs: Schema<number, number, "defined">;
+        confidenceThreshold: Schema<number, number, "defined">;
+        dormantDays: Schema<number, number, "defined">;
+        reviveSimilarity: Schema<number, number, "defined">;
+        supersedeThreshold: Schema<number, number, "defined">;
+        reinforceThreshold: Schema<number, number, "defined">;
+    }>>, "defined">;
+    commands: Schema<Schemastery.ObjectS<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        name: Schema<string, string, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        name: Schema<string, string, "defined">;
     }>>, "defined">;
 }>>, "defined">;

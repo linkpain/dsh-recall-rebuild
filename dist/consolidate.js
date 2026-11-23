@@ -1,5 +1,5 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { clusterize, isDormant, parseConsolidationOutput, } from './consolidated.js';
+import { clusterize, findSupersedePairs, findTwin, isDormant, parseConsolidationOutput, } from './consolidated.js';
 import { resolveModelRoute } from './rebuild.js';
 const CONSOLIDATE_SYSTEM = `你是长期记忆巩固器,服务于一位用户的日常对话助手。
 
@@ -60,22 +60,27 @@ async function consolidateText(ctx, route, frags, opts, signal) {
  */
 export async function runConsolidation(ctx, _store, consolidated, opts, logger) {
     if (!opts.enabled) {
-        return { produced: false, clusters: 0, entries: 0, decayed: 0, pending: 0 };
+        return { produced: false, clusters: 0, entries: 0, decayed: 0, revived: 0, superseded: 0, reinforced: 0, pending: 0 };
     }
     const now = Date.now();
     const pending = consolidated.pending();
     if (pending.length === 0) {
-        return { produced: false, clusters: 0, entries: 0, decayed: 0, pending: 0 };
+        return { produced: false, clusters: 0, entries: 0, decayed: 0, revived: 0, superseded: 0, reinforced: 0, pending: 0 };
     }
     const route = resolveModelRoute(ctx);
     if (!route) {
         logger.debug?.('[recall-rebuild] 巩固:未解析到默认模型路由,保留 pending 下次再试');
-        return { produced: false, clusters: 0, entries: 0, decayed: 0, pending: pending.length };
+        return { produced: false, clusters: 0, entries: 0, decayed: 0, revived: 0, superseded: 0, reinforced: 0, pending: pending.length };
     }
     const items = pending.slice(-opts.maxFragmentsPerRun);
     const clusters = clusterize(items.map((p) => ({ id: p.id, content: p.content })), opts.clusterThreshold, opts.maxCluster);
     let produced = false;
     const producedIds = [];
+    // 本轮产出的条目(含 type/content/userKey),供改口/强化检测比对
+    const freshEntries = [];
+    // 与已有条目几乎重复的产出 → 不新建,改为强化那条已有记忆
+    const reinforceIds = [];
+    let reinforced = 0;
     for (const ids of clusters) {
         const frags = items.filter((p) => ids.includes(p.id));
         if (frags.length === 0)
@@ -105,6 +110,14 @@ export async function runConsolidation(ctx, _store, consolidated, opts, logger) 
         // 同一簇的多条产出先攒起来,循环后一次性落盘(避免逐条全量重写 memories.json)
         const fresh = [];
         for (const p of parsed) {
+            // 同一件事又被观察了一次:强化旧条目(置信度上调),而不是再造一条近义重复
+            const twin = findTwin(p.content, p.type, userKey, consolidated.list(), opts.reinforceThreshold);
+            if (twin) {
+                reinforceIds.push(twin.id);
+                reinforced += 1;
+                produced = true;
+                continue;
+            }
             const id = `c_${now}_${Math.random().toString(36).slice(2, 8)}`;
             fresh.push({
                 id,
@@ -119,6 +132,7 @@ export async function runConsolidation(ctx, _store, consolidated, opts, logger) 
                 touchCount: 0,
             });
             producedIds.push(id);
+            freshEntries.push({ id, type: p.type, content: p.content, userKey });
             produced = true;
         }
         consolidated.upsertMany(fresh);
@@ -135,14 +149,37 @@ export async function runConsolidation(ctx, _store, consolidated, opts, logger) 
         }
     }
     consolidated.addLinks(pairs, '同轮巩固');
-    // 遗忘扫描:低置信 + 长期未命中 → dormant(召回降权,不删除)
+    // 改口覆盖:新条目与旧条目「几乎同一句话、只差一个值」(同一用户同一类型)时,
+    // 旧条目标记为 superseded —— 只降权不删除,用户日后想翻案还有据可查。
+    // 检测必须在新条目落盘之后、遗忘扫描之前:被取代的条目不该再走休眠判定。
+    const supersedePairs = findSupersedePairs(freshEntries, consolidated.list(), opts.supersedeThreshold);
+    const superseded = consolidated.supersedeMany(supersedePairs, now);
+    // 重复观察强化:与「改口覆盖」互斥 —— 同一条旧记忆要么被取代,要么被强化
+    const forgetOptsForReinforce = {
+        confidenceThreshold: opts.confidenceThreshold,
+        dormantDays: opts.dormantDays,
+    };
+    if (reinforceIds.length > 0)
+        consolidated.reinforceMany(reinforceIds, now, forgetOptsForReinforce);
+    // 遗忘/唤醒扫描(双向):低置信 + 长期未命中 → dormant;
+    // 休眠但重新攒够证据(命中抬了 confidence、或用户 edit 过)→ active。
+    // 单向扫描会让 dormant 变成不可逆的死亡状态,这里必须两边都算。
     const forgetOpts = { confidenceThreshold: opts.confidenceThreshold, dormantDays: opts.dormantDays };
     let decayed = 0;
+    let revived = 0;
     for (const m of consolidated.list()) {
-        if (isDormant(m, now, forgetOpts)) {
+        if (m.status === 'superseded')
+            continue; // 已被取代:不参与遗忘/唤醒扫描
+        const shouldSleep = isDormant(m, now, forgetOpts);
+        if (shouldSleep && m.status !== 'dormant') {
             m.status = 'dormant';
             m.updatedAt = now;
             decayed += 1;
+        }
+        else if (!shouldSleep && m.status === 'dormant') {
+            m.status = 'active';
+            m.updatedAt = now;
+            revived += 1;
         }
     }
     // 只清掉本轮真正处理过的碎片:原先无差别 clearPending 会把超出
@@ -150,12 +187,16 @@ export async function runConsolidation(ctx, _store, consolidated, opts, logger) 
     consolidated.clearPending(items.map((p) => p.id));
     consolidated.markRun(now);
     consolidated.saveAll();
-    logger.info(`[recall-rebuild] 睡眠巩固完成: 簇 ${clusters.length}, 产出 ${producedIds.length} 条, 遗忘 ${decayed} 条`);
+    logger.info(`[recall-rebuild] 睡眠巩固完成: 簇 ${clusters.length}, 产出 ${producedIds.length} 条, ` +
+        `遗忘 ${decayed} 条, 唤醒 ${revived} 条, 取代 ${superseded} 条, 强化 ${reinforced} 次`);
     return {
         produced,
         clusters: clusters.length,
         entries: producedIds.length,
         decayed,
+        revived,
+        superseded,
+        reinforced,
         pending: pending.length,
     };
 }
