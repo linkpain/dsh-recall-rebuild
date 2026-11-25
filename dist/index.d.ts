@@ -6,7 +6,7 @@ export declare const inject: string[];
 export declare const Config: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
     enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     dataDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
-    source: import("@deepseek-ai/schemastery").default<"auto" | "prime" | "dsh-memory" | "palace", "auto" | "prime" | "dsh-memory" | "palace", "defined">;
+    source: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     rebuild: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         maxResults: import("@deepseek-ai/schemastery").default<number, number, "defined">;
@@ -109,7 +109,7 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
 }>>, Schemastery.ObjectT<NoInfer<{
     enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     dataDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
-    source: import("@deepseek-ai/schemastery").default<"auto" | "prime" | "dsh-memory" | "palace", "auto" | "prime" | "dsh-memory" | "palace", "defined">;
+    source: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     rebuild: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         maxResults: import("@deepseek-ai/schemastery").default<number, number, "defined">;

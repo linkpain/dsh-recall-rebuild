@@ -144,13 +144,29 @@ export interface RecallRebuildConfig {
   /** prime-memory 数据目录;空 = $DSH_HOME/memory(默认)。 */
   dataDir: string;
   /**
-   * 记忆来源:
-   * - 'auto':自动探测 —— prime-memory 库存在则读它,否则依次尝试 dsh-memory(JSON)与 memory-palace(Markdown);
-   * - 'prime':只读 dsh-prime-memory 的 SQLite 库($dataDir/memory.db);
-   * - 'dsh-memory':只读 @max-null/dsh-memory 的 JSON 记忆(~/.dsh/storages/memory.json 与 <cwd>/.dsh/storages/);
-   * - 'palace':只读 dsh-memory-palace 的 Markdown 文件(~/.deepseek-harness/MEMORY.md 与 <cwd>/.deepseek-harness/memory/)。
+   * 记忆来源(插件市场适配层,见 src/sources/registry.ts):
+   * - 'auto'(默认):探测本机所有已知记忆插件,命中的源**全部打开**并做 RRF 融合(按正文去重),装了多个也不会互相遮蔽;
+   * - 显式指定则只读那一个,读不到会在日志里说清楚原因。
+   *
+   * 已适配的源 id:
+   * - 'prime'           dsh-prime-memory        SQLite $dataDir/memory.db
+   * - 'loci'            dsh-loci                SQLite $DSH_HOME/memory/loci/memory.db
+   * - 'living'          dsh-living-memory       SQLite $DSH_HOME/dsh-living-memory/memory.sqlite3
+   * - 'ltm'             @tr1v3r/dsh-ltm         SQLite memory/ltm.db
+   * - 'nebula'          dsh-memory-nebula       SQLite .dsh-meow/memory.db
+   * - 'dsh-memory-sqlite' dsh-memory            SQLite memory/memory.db
+   * - 'lingshu'         @furongjun1999/dsh-memory  Markdown $DSH_HOME/.dsh-memory/data/mdcg
+   * - 'mnemon'          dsh-mnemon              Markdown ~/.mnemon/runtime + documents
+   * - 'palace'          dsh-memory-palace       Markdown ~/.deepseek-harness/MEMORY.md
+   * - 'jipika'          @jipika/dsh-memory      Markdown $DSH_HOME/memory/topics
+   * - 'hub'             dsh-memory-hub          Markdown $DSH_HOME/memory-hub
+   * - 'longterm'        dsh-longterm-memory     Markdown Obsidian vault
+   * - 'dsh-memory'      @max-null/dsh-memory    JSON $DSH_HOME/storages/memory.json
+   * - 'memory-engine'   dsh-memory-engine       JSON $DSH_HOME/memory-engine/memories.json
+   * - 'tiers'           dsh-memory-tiers        JSON $DSH_HOME/storages/memory/L1..DL3.json
+   * - 'memory-vector'   @restregular/dsh-memory JSONL $DSH_HOME/memory-vector/*.jsonl
    */
-  source: 'auto' | 'prime' | 'dsh-memory' | 'palace';
+  source: string;
   rebuild: RebuildOptions;
   inject: InjectOptions;
   query: QueryOptions;
@@ -163,7 +179,8 @@ export interface RecallRebuildConfig {
 export const recallRebuildSchema = Schema.object({
   enabled: Schema.boolean().default(true),
   dataDir: Schema.string().default(''),
-  source: Schema.union(['auto', 'prime', 'dsh-memory', 'palace']).default('auto'),
+  // 不锁死枚举:新增记忆源适配只改 src/sources/registry.ts,配置面无需同步发版
+  source: Schema.string().default('auto'),
   rebuild: Schema.object({
     enabled: Schema.boolean().default(true),
     maxResults: Schema.number().min(1).max(20).default(5),

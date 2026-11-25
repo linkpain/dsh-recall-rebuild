@@ -1,12 +1,12 @@
 {
   "name": "dsh-recall-rebuild",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public",
     "tag": "latest"
   },
-  "description": "重建式回忆增强插件 for DeepSeek Harness：只读现有记忆插件（dsh-prime-memory）的记忆库，在模型步骤前把检索到的记忆碎片「重建」为带语境与情绪的回忆片段注入，替代生硬的原文/摘要注入。增强版定位：先装 dsh-prime-memory，再装本插件。",
+  "description": "重建式回忆增强插件 for DeepSeek Harness：只读现有记忆插件（内置 16 种主流记忆源适配，含 dsh-prime-memory、dsh-mnemon、dsh-loci、dsh-memory-palace 等）的记忆库，auto 模式下多库 RRF 融合，在模型步骤前把检索到的记忆碎片「重建」为带语境与情绪的回忆片段注入，替代生硬的原文/摘要注入。",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -35,6 +35,7 @@
     "test": "npm run build && node scripts/verify.mjs",
     "test:eval": "node scripts/eval-recall.mjs",
     "test:consolidate": "node scripts/eval-consolidate.mjs",
+    "test:sources": "npm run build && node scripts/verify-sources.mjs",
     "test:all": "npm run test && npm run test:eval && npm run test:consolidate",
     "prepack": "npm run build"
   },

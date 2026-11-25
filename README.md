@@ -30,7 +30,7 @@
 ## 特性
 
 - **只读增强,零污染**:以 `readOnly` 打开现有记忆库(`$DSH_HOME/memory/memory.db`),不重写捕获管线、不写任何数据,装/卸都不影响原插件;
-- **多记忆源可插拔**:`source` 支持 dsh-prime-memory(SQLite FTS5)、@max-null/dsh-memory(JSON 记忆库)与 dsh-memory-palace(Markdown 文件)三种底层记忆,`auto` 自动探测,后续可继续扩展;
+- **多记忆源可插拔**:`source` 内置 **16 种**主流记忆插件适配(dsh-prime-memory、dsh-mnemon、dsh-loci、dsh-living-memory、@furongjun1999/dsh-memory 灵枢、dsh-memory-palace、@tr1v3r/dsh-ltm、dsh-memory-nebula、@max-null/dsh-memory、@restregular/dsh-memory、dsh-memory-engine、dsh-memory-tiers、@jipika/dsh-memory、dsh-memory-hub、dsh-longterm-memory、dsh-memory);`auto` 会**同时打开所有探测到的库并做 RRF 融合**,装几个就融几个,不再「赢者通吃」;
 - **IM 用户级命名空间隔离**:QQ/微信 多人共用角色时,自动解析桥接插件注入的 `<dsh_im_source>` sender 信息,把记忆按用户隔离——「用户 A 的记忆」不会注入给「用户 B」;同一人多会话记忆共享;隔离索引写在插件自己的目录,仍不碰底层记忆库;
 - **生成式重建**:在 `agent/pre-step` 用会话末尾消息召回碎片,LLM 重建为带语境/情绪/时间感的回忆片段,替代生硬原文注入;
 - **与生态共存不错位**:注入消息 `source.kind='plugin:recall-rebuild'`,不会被 prime-memory 当作新用户消息再次捕获/蒸馏;
@@ -57,7 +57,7 @@
 
 - DeepSeek Harness `>=0.1.0-rc.2 <0.3.0-0`(即 0.1.x / 0.2.x 全系列,含 rc / alpha);
 - Node ≥ 22.5(需要内置 `node:sqlite`);
-- 已安装并运行过 `dsh-prime-memory`(0.26.x,SQLite 记忆库)、`dsh-memory`(@max-null,JSON 记忆库)**或** `dsh-memory-palace`(Markdown 记忆文件),且已有记忆数据。
+- 已安装并运行过任一受支持的记忆插件(见[支持的记忆源](#支持的记忆源),共 16 种,如 `dsh-prime-memory`、`dsh-mnemon`、`dsh-loci`、`dsh-memory-palace`),且已有记忆数据;装了多个也没关系,`auto` 会把它们融合起来读。
 
 ```bash
 dsh plugin --profile <你的配置文件名> add dsh-recall-rebuild
@@ -114,7 +114,7 @@ flowchart LR
 | --- | --- | --- |
 | `enabled` | `true` | 总开关 |
 | `dataDir` | `''` | 记忆库目录;空 = `$DSH_HOME/memory` |
-| `source` | `auto` | 记忆来源:`auto` 自动探测(prime → dsh-memory → palace);`prime` = dsh-prime-memory SQLite 库;`dsh-memory` = @max-null/dsh-memory JSON 记忆库;`palace` = dsh-memory-palace Markdown 文件 |
+| `source` | `auto` | 记忆来源。`auto` = 探测到几个就融合几个(多库 RRF 融合 + 正文去重);也可显式指定下面任一 id:见[支持的记忆源](#支持的记忆源) |
 | `rebuild.enabled` | `true` | 重建式回忆开关;`false` 退化为原文检索注入 |
 | `rebuild.maxResults` | `5` | 每轮检索条数 |
 | `rebuild.maxMemoryChars` | `400` | 单条记忆进重建 prompt 的字符上限 |
@@ -155,6 +155,32 @@ flowchart LR
 | `commands.enabled` | `true` | 巩固层交互命令总开关 |
 | `commands.name` | `recall-rebuild` | 注册的命令名(不含前导 `/`);与其它插件冲突时改名 |
 
+## 支持的记忆源
+
+`source: auto` 会探测下表的全部 16 个源,命中几个就打开几个并做 **RRF 融合**(每路取 `max(limit*3, 12)` 条参与融合),再按正文前 120 字归一化去重——同时装两三个记忆插件也不会互相遮蔽。也可以用 `source: <id>` 只读其中一个。
+
+| id | 对应插件 | 存储形态 | 探测路径 |
+| --- | --- | --- | --- |
+| `prime` | dsh-prime-memory | SQLite FTS5 | `$dataDir` / `$DSH_HOME/memory` 下的 `memory.db`、`prime.db` |
+| `loci` | dsh-loci | SQLite | `$DSH_HOME/memory/loci/memory.db` |
+| `living` | dsh-living-memory | SQLite | `$MEMORY_DB_PATH` 或 `$DSH_HOME/dsh-living-memory/memory.sqlite3` |
+| `ltm` | @tr1v3r/dsh-ltm | SQLite | `<cwd>/memory/ltm.db`、`$DSH_HOME/memory/ltm.db`、`$DSH_HOME/storages/ltm.db` |
+| `nebula` | dsh-memory-nebula | SQLite | `<cwd>/.dsh-meow/memory.db`、`$DSH_HOME/.dsh-meow/memory.db` |
+| `dsh-memory-sqlite` | dsh-memory / 同类 SQLite 变体 | SQLite | `<cwd>/memory/memory.db`、`$DSH_HOME/memory/memory.db` |
+| `lingshu` | @furongjun1999/dsh-memory(灵枢) | Markdown 节点 | `$MDCG_DATA_ROOT` 或 `$DSH_HOME/.dsh-memory/data/mdcg` |
+| `mnemon` | dsh-mnemon | Markdown | `~/.mnemon/runtime`(`MEMORY.md`/`USER.md`)与 `~/.mnemon/documents` |
+| `palace` | dsh-memory-palace | Markdown | `~/.deepseek-harness/MEMORY.md`、`<cwd>/.deepseek-harness/MEMORY.md` |
+| `jipika` | @jipika/dsh-memory | Markdown 分片 | `$DSH_HOME/memory/topics/*.md` |
+| `hub` | dsh-memory-hub | Markdown | `$DSH_HOME/memory-hub/{knowledge,records}` |
+| `longterm` | dsh-longterm-memory | Markdown vault | `$DSH_LONGTERM_VAULT`、`$DSH_HOME/longterm-memory`、`<cwd>/.dsh-longterm-memory` |
+| `dsh-memory` | @max-null/dsh-memory | JSON | `$DSH_HOME/storages/memory.json`、`<cwd>/.dsh/storages/memory.json` |
+| `memory-engine` | dsh-memory-engine / @wilshi/dsh-memory-engine | JSON | `$DSH_HOME/memory-engine/memories.json` |
+| `tiers` | dsh-memory-tiers | JSON 分层 | `$DSH_HOME/storages/memory/`(`L1/L2/L3/DL1/DL2/DL3.json`) |
+| `memory-vector` | @restregular/dsh-memory | JSONL | `$DSH_HOME/memory-vector/*.jsonl`(排除 `approvals.jsonl`) |
+
+> `$DSH_HOME` 默认 `~/.dsh`。`prime`、`palace`、`dsh-memory` 三个源沿用各自专用解析(prime 走 FTS5 + LIKE + 字符 n-gram 五路融合与语义精排,palace 按 `##` 章节切分,dsh-memory 按 `unit.tables.blocks` 并过滤未审核/隔离条目),其余源共用通用读取原语(`sqlite` / `markdown` / `json` / `jsonl`)。
+
+> 新增一个源只需在 `src/sources/registry.ts` 里加一条 `SourceSpec`,不必改配置面。
 ## 长期记忆子系统:睡眠巩固与联想扩散
 
 类比人脑:**底层记忆插件 = 海马体**(即时捕获碎片),**本插件的巩固层 = 新皮层**(把碎片沉淀为稳定记忆)。这层只存在本插件自己的目录(`~/.dsh/recall-rebuild/consolidated/`),底层记忆库始终保持只读。
@@ -227,7 +253,8 @@ flowchart LR
 
 ## Roadmap
 
-- [ ] 更多记忆源 adapter(`dsh-memory-vault`、`dsh-auto-memory`、`dsh-memory-gate` 等变体);
+- [x] 主流记忆源 adapter(一次覆盖 16 个插件 + 多库融合)—— v0.1.13 已实现;
+- [ ] 更小众的记忆源 adapter(`dsh-memory-vault`、`dsh-auto-memory`、`dsh-memory-gate` 等变体);
 - [x] IM 用户级命名空间隔离(跨 QQ/微信的同一人记忆共享)—— v0.1.3 已实现;
 - [x] 重建质量可观测(每轮 JSONL 日志 + stats)—— v0.1.4 已实现;
 - [x] 睡眠巩固 / 联想扩散(长期记忆子系统:聚类 → LLM 抽象 → 联想 → 遗忘)—— v0.1.5 已实现;
@@ -266,11 +293,14 @@ npm run build             # 编译到 dist/
 npm test                  # build + scripts/verify.mjs(202 条运行时断言)
 npm run test:eval         # 中文召回评测,recall@5 低于 0.65 直接失败
 npm run test:consolidate  # 巩固层评测(改口/强化/唤醒/扩散的标注集指标)
-npm run test:all          # 三者串跑(CI 跑的就是这套)
+npm run test:sources      # 16 种记忆源适配层冒烟测试(造假数据 + 隔离 HOME,不碰本机真实记忆)
+npm run test:all          # 全部串跑(CI 跑的就是这套)
 npm pack --dry-run        # 检查发布包内容
 ```
 
 `scripts/verify.mjs` 覆盖:导出与 Config 默认值、`sanitizeFts`、FTS 命中与 LIKE 兜底、palace(Markdown)与 dsh-memory(JSON)适配器、命名空间隔离、可观测日志、巩固层聚类/遗忘与唤醒、改口覆盖(supersede)与注入判定、联想边半衰期衰减与两跳扩散、重复观察强化与置信度动态化、命令解析、时效衰减、RRF 融合与排序、跨轮去重、字符 n-gram 语义通道与精排。它 import 的是 `dist/`,所以必须先 build。
+
+`scripts/verify-sources.mjs` 单独覆盖适配层:在临时目录里为每种源造出真实格式的假数据(SQLite 建表插行、Markdown front matter、JSON 数组、JSONL),断言**探测**(认得出装了哪些源、不误报)、**逐源打开并检索命中**、**墓碑过滤**(loci 的 `superseded` 不进结果)、**auto 多源 RRF 融合**、以及**未知 id 回退 auto / 空环境优雅降级**。测试期间把 `DSH_HOME`、`USERPROFILE`、`HOME` 全部指向临时目录,不会读到本机真实记忆。
 
 评测闸门可用环境变量放宽/收紧:`EVAL_MIN_RECALL=0.7 npm run test:eval`(默认 0.65,当前实测 70.0%)。
 
@@ -291,7 +321,7 @@ MIT
 
 This plugin upgrades the **recall/presentation layer**:
 
-- Opens the existing memory store (`$DSH_HOME/memory/memory.db`) **read-only**, never writes, never touches the capture pipeline;
+- Opens the existing memory store **read-only**, never writes, never touches the capture pipeline; **16 built-in adapters** cover the popular memory plugins (`dsh-prime-memory`, `dsh-mnemon`, `dsh-loci`, `dsh-living-memory`, `@furongjun1999/dsh-memory`, `dsh-memory-palace`, `@tr1v3r/dsh-ltm`, `dsh-memory-nebula`, `@max-null/dsh-memory`, `@restregular/dsh-memory`, `dsh-memory-engine`, `dsh-memory-tiers`, `@jipika/dsh-memory`, `dsh-memory-hub`, `dsh-longterm-memory`, `dsh-memory`), and `auto` opens **every** detected store and fuses them with RRF instead of picking a single winner;
 - Before every model step, it retrieves memory fragments and asks the LLM to **reconstruct** them into contextual, emotionally-toned recollection snippets (using only in-fragment facts — no fabrication);
 - **Per-user memory isolation for IM (QQ/WeChat…)**: it parses the `<dsh_im_source>` block that IM bridge plugins attach to messages, extracts `senderId`/`chatId`, and keeps each user's memories out of other users' recalls via an ownership index it maintains in its **own** directory (`<DSH_HOME>/recall-rebuild/namespaces`) — the underlying memory DB is still never written. Modes: `auto` (drop memories clearly owned by others; ownerless memories are conservatively visible until claimed), `strict` (only inject memories already owned by the current user), `off` (no filtering). Desktop chats with no detectable user are never filtered;
 - Injects via `agent/pre-step` with `source.kind='plugin:recall-rebuild'`, so it is never re-captured by the underlying memory plugin; the injection is always **appended at the tail** of the message batch (never prepended, never rewriting the middle of history), so the byte-for-byte prompt prefix of consecutive steps stays intact and prompt caching keeps hitting; `replace` only swaps out this plugin's own previous injection within the same step, `append` always adds;
@@ -303,7 +333,7 @@ This plugin upgrades the **recall/presentation layer**:
 
 **Who it's for**: DSH desktop-pet / virtual-character / companion users who want the bot to "remember like a person" rather than "quote a file", including characters bridged to QQ/WeChat.
 
-Install (after `dsh-prime-memory`):
+Install (after any supported memory plugin):
 
 ```bash
 dsh plugin --profile <your-profile> add dsh-recall-rebuild

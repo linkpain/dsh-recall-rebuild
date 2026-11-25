@@ -9,7 +9,8 @@ import Schema from '@deepseek-ai/schemastery';
 export const recallRebuildSchema = Schema.object({
     enabled: Schema.boolean().default(true),
     dataDir: Schema.string().default(''),
-    source: Schema.union(['auto', 'prime', 'dsh-memory', 'palace']).default('auto'),
+    // 不锁死枚举:新增记忆源适配只改 src/sources/registry.ts,配置面无需同步发版
+    source: Schema.string().default('auto'),
     rebuild: Schema.object({
         enabled: Schema.boolean().default(true),
         maxResults: Schema.number().min(1).max(20).default(5),
