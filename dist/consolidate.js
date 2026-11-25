@@ -58,11 +58,19 @@ async function consolidateText(ctx, route, frags, opts, signal) {
  * 执行一次巩固。返回执行结果;任何失败都不抛错:
  * 无路由/超时/解析失败 → 保留 pending,由调用方继续调度。
  */
-export async function runConsolidation(ctx, _store, consolidated, opts, logger) {
+export async function runConsolidation(ctx, _store, consolidated, opts, logger, 
+/**
+ * 本次巩固的「当前时刻」,仅供测试注入。
+ *
+ * 生产不传、走 Date.now()。但联想边带半衰期衰减,断言要验证「反复观察 12 轮后
+ * 55 天仍扩散得出来」就必须能推进时钟;若测试只能贴着真实时间跑,这类跨时间
+ * 行为就永远测不到——上一版联想扩散失效正是这样漏过去的。
+ */
+nowOverride) {
     if (!opts.enabled) {
         return { produced: false, clusters: 0, entries: 0, decayed: 0, revived: 0, superseded: 0, reinforced: 0, pending: 0 };
     }
-    const now = Date.now();
+    const now = nowOverride ?? Date.now();
     const pending = consolidated.pending();
     if (pending.length === 0) {
         return { produced: false, clusters: 0, entries: 0, decayed: 0, revived: 0, superseded: 0, reinforced: 0, pending: 0 };
@@ -109,11 +117,14 @@ export async function runConsolidation(ctx, _store, consolidated, opts, logger) 
         const sourceIds = frags.map((f) => f.id);
         // 同一簇的多条产出先攒起来,循环后一次性落盘(避免逐条全量重写 memories.json)
         const fresh = [];
+        // 本簇本轮「观察到的」条目 = 新产出的 + 被强化的旧条目。联想边只以它们为端点。
+        const clusterObserved = new Set();
         for (const p of parsed) {
             // 同一件事又被观察了一次:强化旧条目(置信度上调),而不是再造一条近义重复
             const twin = findTwin(p.content, p.type, userKey, consolidated.list(), opts.reinforceThreshold);
             if (twin) {
                 reinforceIds.push(twin.id);
+                clusterObserved.add(twin.id);
                 reinforced += 1;
                 produced = true;
                 continue;
@@ -132,23 +143,34 @@ export async function runConsolidation(ctx, _store, consolidated, opts, logger) 
                 touchCount: 0,
             });
             producedIds.push(id);
+            clusterObserved.add(id);
             freshEntries.push({ id, type: p.type, content: p.content, userKey });
             produced = true;
         }
         consolidated.upsertMany(fresh);
-    }
-    // 联想扩散:本轮产出的条目两两建立「同轮巩固」关联边(后续召回可顺带想起)
-    const pairs = [];
-    for (let i = 0; i < producedIds.length; i++) {
-        for (let j = i + 1; j < producedIds.length; j++) {
-            const a = producedIds[i];
-            const b = producedIds[j];
-            if (!a || !b)
-                continue;
-            pairs.push([a, b]);
+        // 联想扩散(按簇连边):只有「同一簇」的条目才互为联想,跨簇的两条只是同一轮里
+        // 碰巧一起被巩固,并无语义关联,连上就是噪音。
+        //
+        // 端点必须包含「被强化的旧条目」而不只是新产出:条目 id 只在新建时生成,同一件事
+        // 被反复观察走的是 findTwin → 强化旧条目,永远产不出新 id。若只用新产出连边,
+        // 同一对条目的边就永远停在第一次共现那天、权重恒为 1,衰减照走 —— 联想会随时间
+        // 彻底消失,且再怎么重复提起也重建不回来。
+        const observed = [...clusterObserved];
+        if (observed.length > 1) {
+            const pairs = [];
+            for (let i = 0; i < observed.length; i++) {
+                for (let j = i + 1; j < observed.length; j++) {
+                    const a = observed[i];
+                    const b = observed[j];
+                    if (!a || !b)
+                        continue;
+                    pairs.push([a, b]);
+                }
+            }
+            // 传 now:边权累加的同时把 at 前移,衰减被这次共现抵消,联想「越用越牢」
+            consolidated.addLinks(pairs, '同轮巩固', now);
         }
     }
-    consolidated.addLinks(pairs, '同轮巩固');
     // 改口覆盖:新条目与旧条目「几乎同一句话、只差一个值」(同一用户同一类型)时,
     // 旧条目标记为 superseded —— 只降权不删除,用户日后想翻案还有据可查。
     // 检测必须在新条目落盘之后、遗忘扫描之前:被取代的条目不该再走休眠判定。

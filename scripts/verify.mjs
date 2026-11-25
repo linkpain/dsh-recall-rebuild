@@ -659,6 +659,95 @@ check('cmd:remove 清联想边',
 check('cmd:remove 不存在返回 false', cstore.remove('nope') === false);
 fs.rmSync(cmdDir, { recursive: true, force: true });
 
+// ── 2g-2. 巩固链路:联想边必须按簇连、且能被重复观察累加 ────────────
+// 这一段跑的是真实 runConsolidation(假 LLM),不是手搓 addLink。原因:上一版联想扩散
+// 之所以"评测全绿但生产失效",就是因为断言用手工加边把权重凑到 2,绕开了真实数据形态。
+console.log('[2g-2] 巩固链路的联想边');
+const { runConsolidation } = await import(`${distUrl}consolidate.js`);
+const csOpts = plugin.Config({}).consolidate;
+
+/** 假 ctx:给出模型路由,llm.stream 按输入碎片内容返回不同话题的产出。 */
+function fakeCtx() {
+  return {
+    get: (k) => (k === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'p', model: 'm' }) } : undefined),
+    llm: {
+      stream: async function* (o) {
+        const txt = JSON.stringify(o.messages ?? []);
+        const coffee = txt.includes('咖啡');
+        const out = coffee
+          ? { memories: [
+              { type: 'preference', content: '用户喜欢喝冰美式咖啡' },
+              { type: 'pattern', content: '用户下午喝咖啡会失眠' },
+            ] }
+          : { memories: [
+              { type: 'stable-fact', content: '用户养了一只叫煤球的猫' },
+              { type: 'pattern', content: '用户每天早上给猫铲屎' },
+            ] };
+        yield { type: 'text-delta', text: JSON.stringify(out) };
+      },
+    },
+  };
+}
+
+/** 读 links.json,拍平成边数组。 */
+const readEdges = (dir) => {
+  const raw = JSON.parse(fs.readFileSync(path.join(dir, 'links.json'), 'utf8'));
+  return Object.entries(raw).flatMap(([a, o]) => Object.entries(o).map(([b, e]) => ({ a, b, ...e })));
+};
+
+const coDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-co-'));
+const co = new ConsolidatedStore(coDir, logger);
+co.load();
+// 两个互不相关的话题,同轮被巩固:它们之间不该有边。
+// 碎片必须够长:clusterize 会丢掉 content.length < 12 的单条簇。
+co.addPending([
+  { id: 'f1', content: '用户说他很喜欢喝冰美式咖啡,每天早上一杯' },
+  { id: 'f2', content: '用户说他下午喝咖啡会失眠,所以晚上不喝' },
+  { id: 'f3', content: '用户说他养了一只叫煤球的猫,特别黏人' },
+  { id: 'f4', content: '用户说他每天早上都要给猫铲屎' },
+], csOpts.maxFragmentsPerRun);
+const coRes = await runConsolidation(fakeCtx(), null, co, csOpts, logger);
+check('co:真实巩固链路产出条目', coRes.entries === 4, `got ${coRes.entries}`);
+const coEdges = readEdges(coDir);
+check('co:同簇条目互相连边', coEdges.length === 2, `got ${coEdges.length} 条`);
+check('co:不同话题不被错连(按簇连边)', (() => {
+  const isCoffee = (id) => (co.get(id)?.content ?? '').includes('咖啡');
+  return coEdges.every((e) => isCoffee(e.a) === isCoffee(e.b));
+})());
+
+// 第二轮:同样的两件事又被观察到 → findTwin 命中、不新建条目,但边权必须累加、at 必须前移。
+// 这正是旧实现的死代码所在:端点只取新产出时,这里永远走不到 addLink。
+await runConsolidation(fakeCtx(), null, co, csOpts, logger);
+const coEdges2 = readEdges(coDir);
+check('co:重复观察不新建条目', co.list().length === 4, `got ${co.list().length}`);
+check('co:重复观察让边权累加', coEdges2.every((e) => e.weight === 2), `got ${JSON.stringify(coEdges2.map((e) => e.weight))}`);
+check('co:重复观察让 at 前移(衰减被抵消)', coEdges2.every((e) => (e.at ?? 0) >= (coEdges.find((x) => x.a === e.a && x.b === e.b)?.at ?? 0)));
+check('co:累加后联想仍能扩散', co.diffuse(co.list()[0].id, DIFFUSE_OPTS, Date.now()).length > 0);
+
+// 长期:同一主题被反复提起 12 轮(每 5 天一轮),最后一天仍要能扩散出来。
+// 旧实现下边权恒 1 且 at 停在第一轮,55 天后 effective 掉到 0.28,扩散恒为 0。
+const longDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-long-'));
+const longStore = new ConsolidatedStore(longDir, logger);
+longStore.load();
+const LONG_T0 = Date.UTC(2026, 0, 1);
+for (let round = 0; round < 12; round += 1) {
+  // 每轮只丢 1 条碎片:保证只形成一个簇、每轮只连 1 次边,权重才可预测地等于轮数。
+  longStore.addPending([
+    { id: `l${round}`, content: '用户说他很喜欢喝冰美式咖啡,每天早上一杯' },
+  ], csOpts.maxFragmentsPerRun);
+  await runConsolidation(fakeCtx(), null, longStore, csOpts, logger, LONG_T0 + round * 5 * 86400000);
+}
+const longEdges = readEdges(longDir);
+check('co:12 轮后边权累加到 12', longEdges.length === 1 && longEdges[0].weight === 12, `got ${JSON.stringify(longEdges.map((e) => e.weight))}`);
+// at 必须停在最后一轮巩固的时刻:旧实现不传 now,at 由 addLink 内部取 Date.now(),
+// 在注入时钟的测试里等于「未来时间」,衰减被静默跳过——看起来能扩散,其实掩盖了问题。
+check('co:at 停在最后一轮巩固的时刻',
+  longEdges[0].at === LONG_T0 + 11 * 5 * 86400000, `got ${longEdges[0].at} want ${LONG_T0 + 11 * 5 * 86400000}`);
+check('co:55 天后联想依然扩散得出来',
+  longStore.diffuse(longStore.list()[0].id, DIFFUSE_OPTS, LONG_T0 + 11 * 5 * 86400000).length > 0);
+fs.rmSync(longDir, { recursive: true, force: true });
+fs.rmSync(coDir, { recursive: true, force: true });
+
 // ── 2h. 时效衰减(排序分) ───────────────────────────────────────
 console.log('[2h] 时效衰减');
 const { decayFactor, DECAY_FLOOR, DECAY_HALF_LIFE_DAYS } = await import(`${distUrl}store.js`);

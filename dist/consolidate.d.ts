@@ -35,4 +35,12 @@ export interface ConsolidationResult {
  * 执行一次巩固。返回执行结果;任何失败都不抛错:
  * 无路由/超时/解析失败 → 保留 pending,由调用方继续调度。
  */
-export declare function runConsolidation(ctx: Context, _store: MemoryStore, consolidated: ConsolidatedStore, opts: ConsolidateOptions, logger: LoggerLike): Promise<ConsolidationResult>;
+export declare function runConsolidation(ctx: Context, _store: MemoryStore, consolidated: ConsolidatedStore, opts: ConsolidateOptions, logger: LoggerLike, 
+/**
+ * 本次巩固的「当前时刻」,仅供测试注入。
+ *
+ * 生产不传、走 Date.now()。但联想边带半衰期衰减,断言要验证「反复观察 12 轮后
+ * 55 天仍扩散得出来」就必须能推进时钟;若测试只能贴着真实时间跑,这类跨时间
+ * 行为就永远测不到——上一版联想扩散失效正是这样漏过去的。
+ */
+nowOverride?: number): Promise<ConsolidationResult>;
