@@ -54,7 +54,7 @@
 
 前置:
 
-- DeepSeek Harness `0.1.0-rc.2 … 0.2.1-rc.3`;
+- DeepSeek Harness `>=0.1.0-rc.2 <0.3.0-0`(即 0.1.x / 0.2.x 全系列,含 rc / alpha);
 - Node ≥ 22.5(需要内置 `node:sqlite`);
 - 已安装并运行过 `dsh-prime-memory`(0.26.x,SQLite 记忆库)、`dsh-memory`(@max-null,JSON 记忆库)**或** `dsh-memory-palace`(Markdown 记忆文件),且已有记忆数据。
 
