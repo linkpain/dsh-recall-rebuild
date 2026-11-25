@@ -25,6 +25,8 @@ jobs:
         run: npm run build
       - name: Runtime verification
         run: node scripts/verify.mjs
+      - name: Memory source adapters smoke test (16 sources, isolated HOME)
+        run: node scripts/verify-sources.mjs
       - name: Chinese recall eval (recall@5 gate)
         run: node scripts/eval-recall.mjs
       - name: Consolidation layer eval (supersede / twin / revival / diffusion)

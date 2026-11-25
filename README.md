@@ -181,6 +181,7 @@ flowchart LR
 > `$DSH_HOME` 默认 `~/.dsh`。`prime`、`palace`、`dsh-memory` 三个源沿用各自专用解析(prime 走 FTS5 + LIKE + 字符 n-gram 五路融合与语义精排,palace 按 `##` 章节切分,dsh-memory 按 `unit.tables.blocks` 并过滤未审核/隔离条目),其余源共用通用读取原语(`sqlite` / `markdown` / `json` / `jsonl`)。
 
 > 新增一个源只需在 `src/sources/registry.ts` 里加一条 `SourceSpec`,不必改配置面。
+
 ## 长期记忆子系统:睡眠巩固与联想扩散
 
 类比人脑:**底层记忆插件 = 海马体**(即时捕获碎片),**本插件的巩固层 = 新皮层**(把碎片沉淀为稳定记忆)。这层只存在本插件自己的目录(`~/.dsh/recall-rebuild/consolidated/`),底层记忆库始终保持只读。
