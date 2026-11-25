@@ -43,49 +43,49 @@ export const SOURCES = [
         id: 'loci',
         label: 'dsh-loci',
         kind: 'sqlite',
-        open: (ctx) => openLociSource(ctx.logger),
+        open: (ctx) => openLociSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => anyFile(path.join(dshHome(), 'memory', 'loci', 'memory.db')),
     },
     {
         id: 'living',
         label: 'dsh-living-memory',
         kind: 'sqlite',
-        open: (ctx) => openLivingMemorySource(ctx.logger),
+        open: (ctx) => openLivingMemorySource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => anyFile(process.env.MEMORY_DB_PATH?.trim() || path.join(dshHome(), 'dsh-living-memory', 'memory.sqlite3')),
     },
     {
         id: 'ltm',
         label: '@tr1v3r/dsh-ltm',
         kind: 'sqlite',
-        open: (ctx) => openLtmSource(ctx.cwd, ctx.logger),
+        open: (ctx) => openLtmSource(ctx.cwd, ctx.logger, ctx.refreshMs ?? 0),
         probe: (ctx) => anyFile(path.join(ctx.cwd, 'memory', 'ltm.db'), path.join(dshHome(), 'memory', 'ltm.db'), path.join(dshHome(), 'storages', 'ltm.db')),
     },
     {
         id: 'nebula',
         label: 'dsh-memory-nebula',
         kind: 'sqlite',
-        open: (ctx) => openNebulaSource(ctx.cwd, ctx.logger),
+        open: (ctx) => openNebulaSource(ctx.cwd, ctx.logger, ctx.refreshMs ?? 0),
         probe: (ctx) => anyFile(path.join(ctx.cwd, '.dsh-meow', 'memory.db'), path.join(dshHome(), '.dsh-meow', 'memory.db')),
     },
     {
         id: 'dsh-memory-sqlite',
         label: 'dsh-memory(SQLite)',
         kind: 'sqlite',
-        open: (ctx) => openPlainDshMemorySource(ctx.cwd, ctx.logger),
+        open: (ctx) => openPlainDshMemorySource(ctx.cwd, ctx.logger, ctx.refreshMs ?? 0),
         probe: (ctx) => anyFile(path.join(ctx.cwd, 'memory', 'memory.db'), path.join(dshHome(), 'memory', 'memory.db')),
     },
     {
         id: 'lingshu',
         label: '@furongjun1999/dsh-memory',
         kind: 'markdown',
-        open: (ctx) => openLingshuSource(ctx.logger),
+        open: (ctx) => openLingshuSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => anyDir(process.env.MDCG_DATA_ROOT?.trim() || path.join(dshHome(), '.dsh-memory', 'data', 'mdcg')),
     },
     {
         id: 'mnemon',
         label: 'dsh-mnemon',
         kind: 'markdown',
-        open: (ctx) => openMnemonSource(ctx.logger),
+        open: (ctx) => openMnemonSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => anyDir(path.join(os.homedir(), '.mnemon', 'runtime')),
     },
     {
@@ -99,14 +99,14 @@ export const SOURCES = [
         id: 'jipika',
         label: '@jipika/dsh-memory',
         kind: 'markdown',
-        open: (ctx) => openJipikaSource(ctx.logger),
+        open: (ctx) => openJipikaSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => hasFilesIn(path.join(dshHome(), 'memory', 'topics'), ['.md']),
     },
     {
         id: 'hub',
         label: 'dsh-memory-hub',
         kind: 'markdown',
-        open: (ctx) => openHubSource(ctx.logger),
+        open: (ctx) => openHubSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => hasFilesIn(path.join(dshHome(), 'memory-hub', 'knowledge'), ['.md']) ||
             hasFilesIn(path.join(dshHome(), 'memory-hub', 'records'), ['.md']),
     },
@@ -114,7 +114,7 @@ export const SOURCES = [
         id: 'longterm',
         label: 'dsh-longterm-memory',
         kind: 'markdown',
-        open: (ctx) => openLongtermSource(ctx.cwd, ctx.logger),
+        open: (ctx) => openLongtermSource(ctx.cwd, ctx.logger, ctx.refreshMs ?? 0),
         probe: (ctx) => anyDir(process.env.DSH_LONGTERM_VAULT?.trim() || path.join(dshHome(), 'longterm-memory'), path.join(ctx.cwd, '.dsh-longterm-memory')),
     },
     {
@@ -128,21 +128,21 @@ export const SOURCES = [
         id: 'memory-engine',
         label: 'dsh-memory-engine',
         kind: 'json',
-        open: (ctx) => openMemoryEngineSource(ctx.logger),
+        open: (ctx) => openMemoryEngineSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => anyFile(path.join(dshHome(), 'memory-engine', 'memories.json')),
     },
     {
         id: 'tiers',
         label: 'dsh-memory-tiers',
         kind: 'json',
-        open: (ctx) => openMemoryTiersSource(ctx.logger),
+        open: (ctx) => openMemoryTiersSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => anyFile(path.join(dshHome(), 'storages', 'memory', 'L1.json')),
     },
     {
         id: 'memory-vector',
         label: '@restregular/dsh-memory',
         kind: 'jsonl',
-        open: (ctx) => openVectorJsonlSource(ctx.logger),
+        open: (ctx) => openVectorJsonlSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => hasFilesIn(path.join(dshHome(), 'memory-vector'), ['.jsonl']),
     },
 ];
@@ -175,8 +175,19 @@ export function openSource(id, ctx) {
     if (id !== 'auto') {
         const spec = findSource(id);
         if (!spec) {
-            logger.warn('[recall-rebuild] 未知记忆源 "' + id + '",回退 auto 探测');
-            return openSource('auto', ctx);
+            // 不静默回退:拼错 id 时用户以为「只读某个源」,实际却在融合全部源,
+            // 这种偏差只会在召回结果里慢慢显形。警告写全合法 id,标签也带上错误 id。
+            logger.warn('[recall-rebuild] 未知记忆源 "' +
+                id +
+                '",回退 auto 探测。合法 id:' +
+                SOURCE_IDS.join(', '));
+            const fallback = openSource('auto', ctx);
+            return {
+                ...fallback,
+                label: fallback.label + ' [配置的源 "' + id + '" 不存在,已回退 auto]',
+                search: (q, n) => fallback.search(q, n),
+                close: () => fallback.close(),
+            };
         }
         const store = spec.open(ctx);
         if (!store.ok) {

@@ -12,6 +12,7 @@
       #   enabled: true              #   总开关
       #   dataDir: ''                #   记忆库目录；空 = $DSH_HOME/memory（默认）
       #   source: auto               #   记忆来源：auto 或具体 id（prime / mnemon / loci / palace / jipika ...，共 16 种）
+      #   sourceRefreshMs: 60000     #   通用源重读间隔(ms)：0 = 只读一次；prime 不受影响（本就实时）
       #   rebuild:
       #     enabled: true            #   重建式回忆开关（false = 退化为原文检索注入）
       #     maxResults: 5            #   每轮检索的记忆条数

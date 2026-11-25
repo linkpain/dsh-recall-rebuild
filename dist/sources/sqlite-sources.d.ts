@@ -22,22 +22,22 @@ export interface SqliteSourceSpec {
  * 依次尝试候选库,返回第一个成功读到记忆行的源。
  * 全部失败时返回 ok:false 的占位源 —— 调用方据此继续降级,绝不抛错。
  */
-export declare function resolveSqliteSource(spec: SqliteSourceSpec, logger: LoggerLike): MemoryStore;
+export declare function resolveSqliteSource(spec: SqliteSourceSpec, logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** dsh-prime-memory:用户级 memory.db,单表 memories + FTS5。 */
-export declare function openPrimeSqliteSource(dataDir: string, logger: LoggerLike): MemoryStore;
+export declare function openPrimeSqliteSource(dataDir: string, logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** dsh-loci:<DSH_HOME>/memory/loci/memory.db,主表 memory(修订行不可变,读全部历史版本)。 */
-export declare function openLociSource(logger: LoggerLike): MemoryStore;
+export declare function openLociSource(logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** dsh-living-memory:~/.dsh/dsh-living-memory/memory.sqlite3(MEMORY_DB_PATH 可覆盖)。 */
-export declare function openLivingMemorySource(logger: LoggerLike): MemoryStore;
+export declare function openLivingMemorySource(logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** @tr1v3r/dsh-ltm:工作区或用户级 memory/ltm.db。 */
-export declare function openLtmSource(cwd: string, logger: LoggerLike): MemoryStore;
+export declare function openLtmSource(cwd: string, logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** dsh-memory(无 scope 的早期版本):memory/memory.db,表 memories。 */
-export declare function openPlainDshMemorySource(cwd: string, logger: LoggerLike): MemoryStore;
+export declare function openPlainDshMemorySource(cwd: string, logger: LoggerLike, refreshMs?: number): MemoryStore;
 /**
  * dsh-memory-nebula:本体库是各工作区的 .dsh-meow/memory.db(nebula.db 只存连边,不存正文)。
  * 因此同时探测当前工作区与 DSH_HOME 下的 meow 库。
  */
-export declare function openNebulaSource(cwd: string, logger: LoggerLike): MemoryStore;
+export declare function openNebulaSource(cwd: string, logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** 供 auto 探测:某个插件是否「看起来装了」(库文件存在)。 */
 export declare function looksInstalled(spec: SqliteSourceSpec): boolean;
 /** 列出库里所有表名(调试/诊断用,失败返回空数组)。 */

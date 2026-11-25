@@ -7,6 +7,7 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
     enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     dataDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     source: import("@deepseek-ai/schemastery").default<string, string, "defined">;
+    sourceRefreshMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
     rebuild: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         maxResults: import("@deepseek-ai/schemastery").default<number, number, "defined">;
@@ -56,11 +57,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
         logDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         includeFragments: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         statsEnabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        retainDays: import("@deepseek-ai/schemastery").default<number, number, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         logEnabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         logDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         includeFragments: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         statsEnabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        retainDays: import("@deepseek-ai/schemastery").default<number, number, "defined">;
     }>>, "defined">;
     consolidate: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
@@ -110,6 +113,7 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
     enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     dataDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     source: import("@deepseek-ai/schemastery").default<string, string, "defined">;
+    sourceRefreshMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
     rebuild: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         maxResults: import("@deepseek-ai/schemastery").default<number, number, "defined">;
@@ -159,11 +163,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
         logDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         includeFragments: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         statsEnabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        retainDays: import("@deepseek-ai/schemastery").default<number, number, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         logEnabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         logDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         includeFragments: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         statsEnabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        retainDays: import("@deepseek-ai/schemastery").default<number, number, "defined">;
     }>>, "defined">;
     consolidate: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;

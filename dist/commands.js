@@ -7,7 +7,7 @@ export function parseCommandLine(rawInput) {
         return { sub: 'help', args: [], all: false };
     const parts = trimmed.split(/\s+/);
     const head = (parts[0] ?? '').toLowerCase();
-    const known = ['now', 'list', 'edit', 'forget', 'help'];
+    const known = ['now', 'list', 'edit', 'forget', 'sources', 'help'];
     const sub = known.includes(head) ? head : 'unknown';
     const rest = parts.slice(1);
     return { sub, args: rest, all: rest.includes('--all') };
@@ -87,7 +87,9 @@ function recentUserTexts(agent, n) {
     return out;
 }
 /** 注册巩固层交互命令;宿主没有 commands 服务时静默跳过。 */
-export function registerRecallRebuildCommands(ctx, store, consolidated, cfg, logger) {
+export function registerRecallRebuildCommands(ctx, store, consolidated, cfg, logger, 
+/** 记忆源诊断(可选):返回每种源是否探测到;未提供时 sources 子命令说明不可用。 */
+describeSources) {
     if (!cfg.commands.enabled)
         return;
     const runtime = ctx.commands;
@@ -96,8 +98,8 @@ export function registerRecallRebuildCommands(ctx, store, consolidated, cfg, log
     const commandName = cfg.commands.name;
     const disposer = runtime.register({
         name: commandName,
-        description: '管理长期记忆(巩固层): list / now / edit / forget / help',
-        input: { hint: 'list [--all] | now | edit <id> <新内容> | forget <id> | help' },
+        description: '管理长期记忆(巩固层): list / now / edit / forget / sources / help',
+        input: { hint: 'list [--all] | now | edit <id> <新内容> | forget <id> | sources | help' },
         handler: async (invocation) => {
             try {
                 // 当前会话 IM 用户:从最近 user 消息提取;桌面/识别不到 → null
@@ -158,6 +160,23 @@ export function registerRecallRebuildCommands(ctx, store, consolidated, cfg, log
                         consolidated.remove(id);
                         return { kind: 'success', text: `已删除记忆 ${id}(含其联想边)。` };
                     }
+                    case 'sources': {
+                        if (!describeSources) {
+                            return { kind: 'error', text: '当前环境不支持记忆源诊断。' };
+                        }
+                        const rows = describeSources();
+                        const on = rows.filter((r) => r.present);
+                        const off = rows.filter((r) => !r.present);
+                        return {
+                            kind: 'success',
+                            text: `当前配置 source=${cfg.source}\n` +
+                                `探测到 ${on.length}/${rows.length} 个源:\n` +
+                                rows
+                                    .map((r) => `  ${r.present ? '✓' : '·'} ${r.id.padEnd(20)} ${r.label}`)
+                                    .join('\n') +
+                                (off.length > 0 ? `\n(${off.length} 个未探测到,未装或没有数据)` : ''),
+                        };
+                    }
                     case 'help':
                         return {
                             kind: 'success',
@@ -166,6 +185,7 @@ export function registerRecallRebuildCommands(ctx, store, consolidated, cfg, log
                                 `  /${commandName} now                 立即触发一次睡眠巩固\n` +
                                 `  /${commandName} edit <id> <内容>    修正一条记忆\n` +
                                 `  /${commandName} forget <id>         主动删除一条记忆\n` +
+                                `  /${commandName} sources             查看各记忆源的探测情况\n` +
                                 `  /${commandName} help                显示本帮助`,
                         };
                     default:

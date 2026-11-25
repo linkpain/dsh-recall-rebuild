@@ -60,12 +60,23 @@ export class RebuildLogger {
   };
   private lastStatsWrite = 0;
   private readonly statsIntervalMs = 30_000;
+  /** 日志保留天数(0 = 永不清理);按天滚动的文件靠它兜住磁盘。 */
+  private readonly retainDays: number;
+  private lastPruneAt = 0;
+  private readonly pruneIntervalMs = 60 * 60_000;
 
-  constructor(opts: { logDir: string; enabled: boolean; includeFragments: boolean; logger: LoggerLike }) {
+  constructor(opts: {
+    logDir: string;
+    enabled: boolean;
+    includeFragments: boolean;
+    logger: LoggerLike;
+    retainDays?: number;
+  }) {
     this.logDir = opts.logDir;
     this.enabled = opts.enabled;
     this.includeFragments = opts.includeFragments;
     this.logger = opts.logger;
+    this.retainDays = opts.retainDays ?? 0;
   }
 
   /** 当前轮日志文件名(按天滚动)。 */
@@ -130,6 +141,39 @@ export class RebuildLogger {
     }
     // 统计节流落盘
     if (Date.now() - this.lastStatsWrite > this.statsIntervalMs) this.flushStats();
+    // 过期日志清理:每小时最多扫一次目录,免得每轮都 readdir
+    if (this.retainDays > 0 && Date.now() - this.lastPruneAt > this.pruneIntervalMs) {
+      this.lastPruneAt = Date.now();
+      this.pruneOldLogs();
+    }
+  }
+
+  /**
+   * 删除超过保留天数的按天日志文件。
+   *
+   * 只认自己写出来的命名(recall-YYYY-MM-DD.log),别的文件一律不碰 —— 用户可能把
+   * logDir 指到一个共用目录,误删别人的日志比留着旧日志糟糕得多。
+   */
+  pruneOldLogs(): void {
+    if (this.retainDays <= 0) return;
+    const cutoff = Date.now() - this.retainDays * 86_400_000;
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(this.logDir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const m = /^recall-(\d{4})-(\d{2})-(\d{2})\.log$/.exec(name);
+      if (!m) continue;
+      const at = Date.parse(m[1] + '-' + m[2] + '-' + m[3] + 'T00:00:00Z');
+      if (!Number.isFinite(at) || at >= cutoff) continue;
+      try {
+        fs.unlinkSync(path.join(this.logDir, name));
+      } catch {
+        /* 删不掉就下次再说,清理不该影响写日志 */
+      }
+    }
   }
 
   /** 原子写 stats.json(节流外也可主动调用)。 */

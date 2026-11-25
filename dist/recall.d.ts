@@ -59,6 +59,14 @@ export declare function isOurInjection(m: MsgLike): boolean;
  * 绝不插头部、绝不改写历史中部:那会让逐字节前缀在注入点断开,整段历史缓存全废。
  */
 export declare function appendInjection(messages: MsgLike[], injection: MsgLike): MsgLike[];
+/**
+ * 用会话末尾消息构建召回查询(去重、截断预算)。
+ *
+ * 只取「人说的话」:本插件自己的注入(以及别的插件的原文召回)在下一轮已经躺在历史里,
+ * 把它们算进查询会形成自我强化回路 —— 上一轮召回到什么,这一轮的检索词就像什么,
+ * 于是下一轮又召回同一批,越滚越偏。先剔除注入、再取末尾窗口,顺带让窗口不被注入挤占。
+ */
+export declare function buildRecallQuery(messages: MsgLike[] | undefined, cfg: RecallRebuildConfig): string;
 /** 去重窗口:超过这个时长的注入记录视为过期(记忆本身没变,但场景大概率变了)。 */
 export declare const DEDUPE_TTL_MS: number;
 /** 清空去重状态(仅测试用)。 */

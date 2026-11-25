@@ -224,6 +224,24 @@ export function decayFactor(timestampStr: string, now: number): number {
   return Math.max(DECAY_FLOOR, Math.pow(0.5, days / DECAY_HALF_LIFE_DAYS));
 }
 
+/* ── 长度归一化 ────────────────────────────────────────────
+ * 命中词数是「这条记忆提到了几个查询词」,但它随正文长度单调变好:长文更容易
+ * 顺带提到某个词,于是「一段顺带提及的流水账」会压过「一句话直击要害的记忆」。
+ * 归一化用 sqrt(参考长度 / 正文长度):120 字以内不打折(典型记忆就这个量级),
+ * 之后缓慢折减并设 0.4 地板 —— 长文仍可能因为真的讲得多而胜出,只是不再白拿长度红利。
+ */
+
+/** 不打折的正文长度(字)。 */
+export const LENGTH_REF = 120;
+/** 归一化系数下限:再长的正文也保留 40% 分,避免长文档被一刀切埋掉。 */
+export const LENGTH_FLOOR = 0.4;
+
+/** 正文长度 → 打分系数(≤1)。 */
+export function lengthFactor(bodyLen: number): number {
+  if (!Number.isFinite(bodyLen) || bodyLen <= LENGTH_REF) return 1;
+  return Math.max(LENGTH_FLOOR, Math.sqrt(LENGTH_REF / bodyLen));
+}
+
 /**
  * 按「优先级 × 时效衰减」重排并截断:检索侧统一出口。
  * 无论底层是 FTS、LIKE 打分还是巩固层条目,进入重建前都过这一道,
@@ -527,9 +545,10 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
           for (const w of words) if (hay.includes(w)) hits += 1;
           return { rec, hits };
         });
+        // 命中数按正文长度归一化后再排:长文不白拿「顺带提到」的红利
         scored.sort(
           (a, b) =>
-            b.hits - a.hits ||
+            b.hits * lengthFactor(b.rec.content.length) - a.hits * lengthFactor(a.rec.content.length) ||
             b.rec.priority - a.rec.priority ||
             (a.rec.timestampStr < b.rec.timestampStr ? 1 : a.rec.timestampStr > b.rec.timestampStr ? -1 : 0),
         );
@@ -561,7 +580,10 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
             for (const c of chars) if (hay.includes(c)) hits += 1;
             return { rec, hits };
           });
-          charScored.sort((a, b) => b.hits - a.hits);
+          charScored.sort(
+            (a, b) =>
+              b.hits * lengthFactor(b.rec.content.length) - a.hits * lengthFactor(a.rec.content.length),
+          );
           if (charScored.length > 0) {
             lists.push(charScored.map((s) => s.rec));
             weights.push(W_CHAR);
@@ -740,7 +762,7 @@ export function openPalaceStore(cwd: string, logger: LoggerLike): MemoryStore {
           type: 'palace',
           sceneName: e.section,
           family: e.rel,
-          priority: hits,
+          priority: hits * lengthFactor(e.content.length),
           timestampStr: e.ts,
         }));
       return rankMemories(ranked, limit, Date.now());
@@ -878,7 +900,7 @@ export function openDshMemoryStore(cwd: string, logger: LoggerLike): MemoryStore
         type: 'dsh-memory',
         sceneName: e.namespace === 'project' ? 'project 记忆' : 'global 记忆',
         family: e.rel,
-        priority: hits,
+        priority: hits * lengthFactor(e.content.length),
         timestampStr: epochToDate(e.updatedAt),
       }));
       return rankMemories(ranked, limit, Date.now());

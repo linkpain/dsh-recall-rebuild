@@ -26,7 +26,7 @@ export interface SqliteSourceSpec {
  * 依次尝试候选库,返回第一个成功读到记忆行的源。
  * 全部失败时返回 ok:false 的占位源 —— 调用方据此继续降级,绝不抛错。
  */
-export function resolveSqliteSource(spec: SqliteSourceSpec, logger: LoggerLike): MemoryStore {
+export function resolveSqliteSource(spec: SqliteSourceSpec, logger: LoggerLike, refreshMs = 0): MemoryStore {
   const tried: string[] = [];
   for (const file of spec.files) {
     if (!isFile(file)) continue;
@@ -34,6 +34,7 @@ export function resolveSqliteSource(spec: SqliteSourceSpec, logger: LoggerLike):
     const store = openSqliteSource(
       { label: spec.label, file, tables: spec.tables, type: spec.type },
       logger,
+      refreshMs,
     );
     if (store.ok) return store;
     store.close();
@@ -48,7 +49,7 @@ export function resolveSqliteSource(spec: SqliteSourceSpec, logger: LoggerLike):
 }
 
 /** dsh-prime-memory:用户级 memory.db,单表 memories + FTS5。 */
-export function openPrimeSqliteSource(dataDir: string, logger: LoggerLike): MemoryStore {
+export function openPrimeSqliteSource(dataDir: string, logger: LoggerLike, refreshMs = 0): MemoryStore {
   const dir = dataDir || path.join(dshHome(), 'memory');
   return resolveSqliteSource(
     {
@@ -59,11 +60,12 @@ export function openPrimeSqliteSource(dataDir: string, logger: LoggerLike): Memo
       tables: ['memories', 'memory', 'entries', 'facts'],
     },
     logger,
+    refreshMs,
   );
 }
 
 /** dsh-loci:<DSH_HOME>/memory/loci/memory.db,主表 memory(修订行不可变,读全部历史版本)。 */
-export function openLociSource(logger: LoggerLike): MemoryStore {
+export function openLociSource(logger: LoggerLike, refreshMs = 0): MemoryStore {
   return resolveSqliteSource(
     {
       id: 'loci',
@@ -73,11 +75,12 @@ export function openLociSource(logger: LoggerLike): MemoryStore {
       tables: ['memory'],
     },
     logger,
+    refreshMs,
   );
 }
 
 /** dsh-living-memory:~/.dsh/dsh-living-memory/memory.sqlite3(MEMORY_DB_PATH 可覆盖)。 */
-export function openLivingMemorySource(logger: LoggerLike): MemoryStore {
+export function openLivingMemorySource(logger: LoggerLike, refreshMs = 0): MemoryStore {
   const override = process.env.MEMORY_DB_PATH?.trim();
   return resolveSqliteSource(
     {
@@ -88,11 +91,12 @@ export function openLivingMemorySource(logger: LoggerLike): MemoryStore {
       tables: ['memories'],
     },
     logger,
+    refreshMs,
   );
 }
 
 /** @tr1v3r/dsh-ltm:工作区或用户级 memory/ltm.db。 */
-export function openLtmSource(cwd: string, logger: LoggerLike): MemoryStore {
+export function openLtmSource(cwd: string, logger: LoggerLike, refreshMs = 0): MemoryStore {
   return resolveSqliteSource(
     {
       id: 'ltm',
@@ -106,11 +110,12 @@ export function openLtmSource(cwd: string, logger: LoggerLike): MemoryStore {
       tables: ['memories'],
     },
     logger,
+    refreshMs,
   );
 }
 
 /** dsh-memory(无 scope 的早期版本):memory/memory.db,表 memories。 */
-export function openPlainDshMemorySource(cwd: string, logger: LoggerLike): MemoryStore {
+export function openPlainDshMemorySource(cwd: string, logger: LoggerLike, refreshMs = 0): MemoryStore {
   return resolveSqliteSource(
     {
       id: 'dsh-memory-sqlite',
@@ -123,6 +128,7 @@ export function openPlainDshMemorySource(cwd: string, logger: LoggerLike): Memor
       tables: ['memories'],
     },
     logger,
+    refreshMs,
   );
 }
 
@@ -130,7 +136,7 @@ export function openPlainDshMemorySource(cwd: string, logger: LoggerLike): Memor
  * dsh-memory-nebula:本体库是各工作区的 .dsh-meow/memory.db(nebula.db 只存连边,不存正文)。
  * 因此同时探测当前工作区与 DSH_HOME 下的 meow 库。
  */
-export function openNebulaSource(cwd: string, logger: LoggerLike): MemoryStore {
+export function openNebulaSource(cwd: string, logger: LoggerLike, refreshMs = 0): MemoryStore {
   return resolveSqliteSource(
     {
       id: 'nebula',
@@ -144,6 +150,7 @@ export function openNebulaSource(cwd: string, logger: LoggerLike): MemoryStore {
       tables: ['memories', 'memory', 'entries'],
     },
     logger,
+    refreshMs,
   );
 }
 

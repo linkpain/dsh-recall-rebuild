@@ -16,7 +16,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
-import { fuseRanked, rankMemories, tokenizeQuery } from '../store.js';
+import { fuseRanked, lengthFactor, rankMemories, tokenizeQuery } from '../store.js';
 const require = createRequire(import.meta.url);
 /* ── 路径 ─────────────────────────────────────────────────── */
 /** DSH 状态根:DSH_HOME 优先,否则 ~/.dsh。 */
@@ -105,22 +105,37 @@ export function mtimeDate(file) {
 /**
  * 把一批 Doc 变成 MemoryStore:
  * 命中词数 × 高价值字段加权 × 时效衰减,复用 store.ts 的统一排序出口。
+ *
+ * reload/refreshMs:通用源打开时一次性把条目读进内存(比每次检索都扫盘快两个数量级),
+ * 代价是读一次就定住了 —— 插件启动后新写入的记忆要重启才看得见。传了 reload 就按
+ * refreshMs 间隔在检索路径上重读(至多多付一次读盘,不额外起定时器),让「边聊边记」
+ * 的记忆库跟上。重读失败或读到空时沿用旧快照:宁可旧一点,也不要检索突然全空。
  */
-export function makeTextStore(label, docs, logger) {
+export function makeTextStore(label, docs, logger, opts = {}) {
     if (docs.length === 0) {
         logger.warn('[recall-rebuild] ' + label + ':未读到任何记忆条目,该源跳过');
         return { ok: false, label, search: () => [], close: () => { } };
     }
-    const prepared = docs.map((d) => ({
-        doc: d,
-        body: normText(d.text),
-        hints: normText(d.hints.join(' ')),
-    }));
+    const prepare = (list) => list.map((d) => ({ doc: d, body: normText(d.text), hints: normText(d.hints.join(' ')) }));
+    let prepared = prepare(docs);
+    let loadedAt = Date.now();
+    const refreshMs = opts.refreshMs ?? 0;
     const families = [...new Set(docs.map((d) => d.family))];
     return {
         ok: true,
         label: label + ' (' + families.length + ' 个文件/表,' + docs.length + ' 条)',
         search(query, limit) {
+            if (opts.reload && refreshMs > 0 && Date.now() - loadedAt >= refreshMs) {
+                loadedAt = Date.now();
+                try {
+                    const fresh = opts.reload();
+                    if (fresh.length > 0)
+                        prepared = prepare(fresh);
+                }
+                catch {
+                    /* 刷新失败:沿用旧快照,下个窗口再试 */
+                }
+            }
             const words = tokenizeQuery(query);
             if (words.length === 0)
                 return [];
@@ -142,7 +157,8 @@ export function makeTextStore(label, docs, logger) {
                     type: p.doc.type,
                     sceneName: p.doc.scene,
                     family: p.doc.family,
-                    priority: hits,
+                    // 命中词数按正文长度归一化:长文不白拿「顺带提到」的红利
+                    priority: hits * lengthFactor(p.body.length),
                     timestampStr: p.doc.ts,
                 });
             }
@@ -643,7 +659,7 @@ export function readSqliteDocs(db, dbLabel, tableNames, type, limitPerTable = 50
  * 通用 SQLite 记忆源:打开库 → 挑表 → 读行 → 映射。
  * 表名候选来自各插件实测;缺表时退化为「所有含正文列的表」。
  */
-export function openSqliteSource(opts, logger) {
+export function openSqliteSource(opts, logger, refreshMs = 0) {
     const { label, file, tables, type } = opts;
     if (!isFile(file)) {
         return {
@@ -661,9 +677,11 @@ export function openSqliteSource(opts, logger) {
     const all = listTables(db);
     const wanted = (tables ?? []).filter((t) => all.includes(t));
     const targets = wanted.length > 0 ? wanted : all;
+    // 库句柄一直开着,重读只是再跑一遍 SELECT(不重新打开文件、不重建连接)
+    const readAll = () => readSqliteDocs(db, label, targets, type, opts.limitPerTable ?? 5000);
     let docs = [];
     try {
-        docs = readSqliteDocs(db, label, targets, type, opts.limitPerTable ?? 5000);
+        docs = readAll();
     }
     catch (err) {
         logger.warn('[recall-rebuild] ' + label + ':读取失败 ' + (err instanceof Error ? err.message : String(err)));
@@ -677,7 +695,7 @@ export function openSqliteSource(opts, logger) {
         }
         return { ok: false, label: label + '(无记忆行)', search: () => [], close: () => { } };
     }
-    const store = makeTextStore(label, docs, logger);
+    const store = makeTextStore(label, docs, logger, { reload: readAll, refreshMs });
     return {
         ok: store.ok,
         label: store.label,

@@ -12,7 +12,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import { recallRebuildSchema, type RecallRebuildConfig } from './config.js';
 import type { LoggerLike } from './store.js';
-import { openSource } from './sources/index.js';
+import { describeSources, openSource } from './sources/index.js';
 import { registerRecallRebuild } from './recall.js';
 import { NamespaceStore } from './namespace.js';
 import { RebuildLogger } from './observability.js';
@@ -26,97 +26,90 @@ export const name = 'recall-rebuild';
 export const inject = ['llm', 'commands?'];
 export const Config = recallRebuildSchema;
 
-function resolveDataDir(config: RecallRebuildConfig, logger: LoggerLike): string {
-  if (config.dataDir) return config.dataDir;
+/**
+ * 解析插件自己用的目录:显式配置优先,否则 <DSH_HOME>/<segments…>。
+ *
+ * 四套目录(记忆库 / 隔离索引 / 日志 / 巩固层)的解析规则一模一样,只是段名与
+ * 提示语不同;以前是四个逐字复制的函数,改一处就得记得改四处。
+ * 拿不到 DSH_HOME 时退回 ~/.dsh/<segments…>,并提示用户显式配置。
+ */
+function resolveDir(
+  explicit: string,
+  segments: string[],
+  hint: string,
+  logger: LoggerLike,
+): string {
+  if (explicit) return explicit;
   try {
     const home = dshHomePath();
-    if (home) return path.join(home, 'memory');
+    if (home) return path.join(home, ...segments);
   } catch {
     /* 落到兜底 */
   }
   const base = process.env.HOME || process.env.USERPROFILE || '';
-  const fallback = base ? path.join(base, '.dsh', 'memory') : '';
+  const fallback = base ? path.join(base, '.dsh', ...segments) : '';
   if (!fallback) {
-    logger.warn(`[recall-rebuild] 无法确定 $DSH_HOME,请在 config.dataDir 显式指定记忆库目录`);
-  }
-  return fallback;
-}
-
-/** 用户隔离归属目录:<DSH_HOME>/recall-rebuild/namespaces(缺省 ~/.dsh/recall-rebuild/namespaces)。 */
-function resolveIsolationDir(config: RecallRebuildConfig, logger: LoggerLike): string {
-  if (config.user.isolationDir) return config.user.isolationDir;
-  try {
-    const home = dshHomePath();
-    if (home) return path.join(home, 'recall-rebuild', 'namespaces');
-  } catch {
-    /* 落到兜底 */
-  }
-  const base = process.env.HOME || process.env.USERPROFILE || '';
-  const fallback = base ? path.join(base, '.dsh', 'recall-rebuild', 'namespaces') : '';
-  if (!fallback) {
-    logger.warn(`[recall-rebuild] 无法确定用户隔离目录,请在 config.user.isolationDir 显式指定`);
-  }
-  return fallback;
-}
-
-/** 重建日志目录:<DSH_HOME>/recall-rebuild/logs(缺省 ~/.dsh/recall-rebuild/logs)。 */
-function resolveLogDir(config: RecallRebuildConfig, logger: LoggerLike): string {
-  if (config.observability.logDir) return config.observability.logDir;
-  try {
-    const home = dshHomePath();
-    if (home) return path.join(home, 'recall-rebuild', 'logs');
-  } catch {
-    /* 落到兜底 */
-  }
-  const base = process.env.HOME || process.env.USERPROFILE || '';
-  const fallback = base ? path.join(base, '.dsh', 'recall-rebuild', 'logs') : '';
-  if (!fallback) {
-    logger.warn(`[recall-rebuild] 无法确定日志目录,请在 config.observability.logDir 显式指定`);
-  }
-  return fallback;
-}
-
-/** 睡眠巩固层目录:<DSH_HOME>/recall-rebuild/consolidated(缺省 ~/.dsh/recall-rebuild/consolidated)。 */
-function resolveConsolidateDir(config: RecallRebuildConfig, logger: LoggerLike): string {
-  if (config.consolidate.dir) return config.consolidate.dir;
-  try {
-    const home = dshHomePath();
-    if (home) return path.join(home, 'recall-rebuild', 'consolidated');
-  } catch {
-    /* 落到兜底 */
-  }
-  const base = process.env.HOME || process.env.USERPROFILE || '';
-  const fallback = base ? path.join(base, '.dsh', 'recall-rebuild', 'consolidated') : '';
-  if (!fallback) {
-    logger.warn(`[recall-rebuild] 无法确定巩固层目录,请在 config.consolidate.dir 显式指定`);
+    logger.warn(`[recall-rebuild] 无法确定 $DSH_HOME,${hint}`);
   }
   return fallback;
 }
 
 export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<void> {
   const logger: LoggerLike = ctx.logger;
-  const dataDir = resolveDataDir(config, logger);
+  const dataDir = resolveDir(
+    config.dataDir,
+    ['memory'],
+    '请在 config.dataDir 显式指定记忆库目录',
+    logger,
+  );
   // 工作目录:用于定位 memory-palace 的工作区记忆文件(默认 DSH 进程 cwd)
   const cwd = process.cwd();
 
   // 可插拔记忆源:auto 探测并打开本机所有已知记忆插件(SQLite / Markdown / JSON / JSONL),多源 RRF 融合
-  const store = openSource(config.source, { dataDir, cwd, logger });
+  const store = openSource(config.source, {
+    dataDir,
+    cwd,
+    logger,
+    refreshMs: config.sourceRefreshMs,
+  });
   ctx.effect(() => () => store.close());
 
   // IM 用户级命名空间隔离(自己的目录,绝不写底层记忆库)
-  const namespaces = new NamespaceStore(resolveIsolationDir(config, logger), logger);
+  const namespaces = new NamespaceStore(
+    resolveDir(
+      config.user.isolationDir,
+      ['recall-rebuild', 'namespaces'],
+      '请在 config.user.isolationDir 显式指定用户隔离目录',
+      logger,
+    ),
+    logger,
+  );
   namespaces.ensureDir();
 
   // 重建质量可观测:每轮 JSONL 日志 + 统计(自己的目录)
   const obsLog = new RebuildLogger({
-    logDir: resolveLogDir(config, logger),
+    logDir: resolveDir(
+      config.observability.logDir,
+      ['recall-rebuild', 'logs'],
+      '请在 config.observability.logDir 显式指定日志目录',
+      logger,
+    ),
     enabled: config.observability.logEnabled,
     includeFragments: config.observability.includeFragments,
+    retainDays: config.observability.retainDays,
     logger,
   });
 
   // 睡眠巩固层(长期记忆子系统):自己的目录,底层记忆库保持只读
-  const consolidated = new ConsolidatedStore(resolveConsolidateDir(config, logger), logger);
+  const consolidated = new ConsolidatedStore(
+    resolveDir(
+      config.consolidate.dir,
+      ['recall-rebuild', 'consolidated'],
+      '请在 config.consolidate.dir 显式指定巩固层目录',
+      logger,
+    ),
+    logger,
+  );
   consolidated.load();
 
   if (store.ok) {
@@ -132,7 +125,9 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
   registerRecallRebuild(ctx, store, config, logger, namespaces, obsLog, consolidated);
 
   // 巩固层交互命令(可选依赖:宿主无 commands 服务时静默跳过,不影响插件主体)
-  registerRecallRebuildCommands(ctx, store, consolidated, config, logger);
+  registerRecallRebuildCommands(ctx, store, consolidated, config, logger, () =>
+    describeSources({ dataDir, cwd, logger, refreshMs: config.sourceRefreshMs }),
+  );
 
   // 睡眠巩固调度:启动后空闲 10s 查一次,之后按 checkIntervalMs 定时查;
   // 触发条件由 shouldRun 判定(pending 达标 + 距上次巩固超间隔),真正执行时

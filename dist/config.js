@@ -11,6 +11,7 @@ export const recallRebuildSchema = Schema.object({
     dataDir: Schema.string().default(''),
     // 不锁死枚举:新增记忆源适配只改 src/sources/registry.ts,配置面无需同步发版
     source: Schema.string().default('auto'),
+    sourceRefreshMs: Schema.number().min(0).max(3_600_000).default(60_000),
     rebuild: Schema.object({
         enabled: Schema.boolean().default(true),
         maxResults: Schema.number().min(1).max(20).default(5),
@@ -40,6 +41,7 @@ export const recallRebuildSchema = Schema.object({
         logDir: Schema.string().default(''),
         includeFragments: Schema.boolean().default(true),
         statsEnabled: Schema.boolean().default(true),
+        retainDays: Schema.number().min(0).max(3650).default(30),
     }).default({}),
     consolidate: Schema.object({
         enabled: Schema.boolean().default(true),

@@ -72,6 +72,8 @@ export interface ObservabilityOptions {
     includeFragments: boolean;
     /** 是否写统计文件 stats.json(30s 节流)。 */
     statsEnabled: boolean;
+    /** 日志保留天数:更早的按天日志文件在写日志时顺手删除;0 = 永不删除。 */
+    retainDays: number;
 }
 /** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
 export interface CommandsOptions {
@@ -159,6 +161,14 @@ export interface RecallRebuildConfig {
      * - 'memory-vector'   @restregular/dsh-memory JSONL $DSH_HOME/memory-vector/*.jsonl
      */
     source: string;
+    /**
+     * 通用记忆源(prime 之外的全部适配器)的重读间隔(ms)。
+     *
+     * prime 是每次检索实时查库,新记忆立刻可见;其余源把条目读进内存换检索速度,
+     * 读一次就定住意味着插件启动后新写入的记忆要重启才召回得到。给个间隔就让它们
+     * 在检索路径上按需重读。0 = 关闭(回到「只读一次」的旧行为)。
+     */
+    sourceRefreshMs: number;
     rebuild: RebuildOptions;
     inject: InjectOptions;
     query: QueryOptions;
@@ -171,6 +181,7 @@ export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
     enabled: Schema<boolean, boolean, "defined">;
     dataDir: Schema<string, string, "defined">;
     source: Schema<string, string, "defined">;
+    sourceRefreshMs: Schema<number, number, "defined">;
     rebuild: Schema<Schemastery.ObjectS<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
         maxResults: Schema<number, number, "defined">;
@@ -220,11 +231,13 @@ export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
         logDir: Schema<string, string, "defined">;
         includeFragments: Schema<boolean, boolean, "defined">;
         statsEnabled: Schema<boolean, boolean, "defined">;
+        retainDays: Schema<number, number, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         logEnabled: Schema<boolean, boolean, "defined">;
         logDir: Schema<string, string, "defined">;
         includeFragments: Schema<boolean, boolean, "defined">;
         statsEnabled: Schema<boolean, boolean, "defined">;
+        retainDays: Schema<number, number, "defined">;
     }>>, "defined">;
     consolidate: Schema<Schemastery.ObjectS<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
@@ -274,6 +287,7 @@ export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
     enabled: Schema<boolean, boolean, "defined">;
     dataDir: Schema<string, string, "defined">;
     source: Schema<string, string, "defined">;
+    sourceRefreshMs: Schema<number, number, "defined">;
     rebuild: Schema<Schemastery.ObjectS<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
         maxResults: Schema<number, number, "defined">;
@@ -323,11 +337,13 @@ export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
         logDir: Schema<string, string, "defined">;
         includeFragments: Schema<boolean, boolean, "defined">;
         statsEnabled: Schema<boolean, boolean, "defined">;
+        retainDays: Schema<number, number, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         logEnabled: Schema<boolean, boolean, "defined">;
         logDir: Schema<string, string, "defined">;
         includeFragments: Schema<boolean, boolean, "defined">;
         statsEnabled: Schema<boolean, boolean, "defined">;
+        retainDays: Schema<number, number, "defined">;
     }>>, "defined">;
     consolidate: Schema<Schemastery.ObjectS<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;

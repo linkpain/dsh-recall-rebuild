@@ -180,6 +180,8 @@ auto.close();
 console.log('\n[fallback] 未知 id / 空目录');
 const unknown = mod.openSource('not-a-source', ctx);
 check('未知 id 回退 auto 而非抛错', typeof unknown.label === 'string');
+// 静默回退会让用户以为「只读某个源」,实际在融合全部源;label 必须留下痕迹
+check('未知 id 在 label 里显式标注', unknown.label.includes('not-a-source'), unknown.label);
 unknown.close();
 
 const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-empty-'));

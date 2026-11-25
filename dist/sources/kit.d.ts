@@ -38,8 +38,16 @@ export declare function mtimeDate(file: string): string;
 /**
  * 把一批 Doc 变成 MemoryStore:
  * 命中词数 × 高价值字段加权 × 时效衰减,复用 store.ts 的统一排序出口。
+ *
+ * reload/refreshMs:通用源打开时一次性把条目读进内存(比每次检索都扫盘快两个数量级),
+ * 代价是读一次就定住了 —— 插件启动后新写入的记忆要重启才看得见。传了 reload 就按
+ * refreshMs 间隔在检索路径上重读(至多多付一次读盘,不额外起定时器),让「边聊边记」
+ * 的记忆库跟上。重读失败或读到空时沿用旧快照:宁可旧一点,也不要检索突然全空。
  */
-export declare function makeTextStore(label: string, docs: Doc[], logger: LoggerLike): MemoryStore;
+export declare function makeTextStore(label: string, docs: Doc[], logger: LoggerLike, opts?: {
+    reload?: () => Doc[];
+    refreshMs?: number;
+}): MemoryStore;
 /**
  * 把多个已打开的源合成一个:检索时并行问每个源,再用 RRF 融合。
  *
@@ -127,7 +135,7 @@ export declare function openSqliteSource(opts: {
     tables?: string[];
     type: string;
     limitPerTable?: number;
-}, logger: LoggerLike): MemoryStore;
+}, logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** 毫秒 → 天数(供源排序/调试用)。 */
 export declare function daysSince(ms: number): number;
 export {};

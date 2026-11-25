@@ -157,6 +157,27 @@ const after = evaluate('新分词(拉丁词 + CJK 2-gram)', function (q, k) {
 });
 store.close();
 
+/* ── 通用源路径(15 个非 prime 适配器共用 makeTextStore)─────────
+ * 之前评测只覆盖 prime:其余 15 个源把条目读进内存、走另一套打分,
+ * 改动它们时没有任何回归信号。这里用同一批 fixture 跑一遍通用源。 */
+const { makeTextStore } = await import(distUrl + 'sources/kit.js');
+const genericDocs = FIXTURE.map(function (m, i) {
+  return {
+    id: m.id,
+    text: m.content,
+    hints: [m.scene],
+    scene: m.scene,
+    family: 'fixture',
+    type: m.type,
+    // 与 prime 那批同一套日期口径,让时效衰减在两路上可比
+    ts: '2026-' + pad2(1 + (i % 9)) + '-' + pad2(1 + (i % 27)),
+  };
+});
+const genericStore = makeTextStore('eval', genericDocs, logger);
+const generic = evaluate('通用源(15 个适配器共用)', function (q, k) {
+  return genericStore.search(q, k).map(function (r) { return r.id; });
+});
+
 const before = evaluate('旧分词(整句一个词元)', function (q, k) { return legacySearch(tmp, q, k); });
 
 fs.rmSync(tmp, { recursive: true, force: true });
@@ -165,7 +186,7 @@ function pct(x) { return (x * 100).toFixed(1) + '%'; }
 console.log('');
 console.log('中文召回评测(40 条 fixture,recall@5 / MRR@5)');
 console.log('');
-[before, after].forEach(function (r) {
+[before, after, generic].forEach(function (r) {
   console.log('  ' + r.label.padEnd(26) + ' recall@5 = ' + pct(r.recall).padStart(6) +
     '   MRR@5 = ' + r.mrr.toFixed(3) + '   未命中 ' + r.missCount + '/40');
 });
@@ -173,6 +194,7 @@ console.log('');
 console.log('  recall@5 提升 ' + (after.recall - before.recall >= 0 ? '+' : '') +
   ((after.recall - before.recall) * 100).toFixed(1) + ' 个百分点');
 if (after.misses.length > 0) console.log('  新实现仍未命中: ' + after.misses.join(', '));
+if (generic.misses.length > 0) console.log('  通用源仍未命中: ' + generic.misses.join(', '));
 if (after.recall <= before.recall) {
   console.error('');
   console.error('失败:新分词的 recall@5 未超过旧分词,改动可能未生效');
@@ -184,6 +206,16 @@ const MIN_RECALL = Number(process.env.EVAL_MIN_RECALL ?? 0.65);
 if (after.recall < MIN_RECALL) {
   console.error('');
   console.error('失败:recall@5 ' + pct(after.recall) + ' 低于回归闸门 ' + pct(MIN_RECALL));
+  process.exit(1);
+}
+// 通用源单列闸门:它和 prime 走不同打分路径,不能用 prime 的成绩替它担保。
+// 门槛比 prime 低一大截是如实记录差距:通用源只有词覆盖度,没有 FTS/BM25/
+// 单字/语义四条通道,同一批 fixture 上本来就低 22 个点。闸门卡在实测值附近,
+// 只防「把通用源打分改坏」,不假装它和 prime 一样强。
+const MIN_GENERIC = Number(process.env.EVAL_MIN_GENERIC ?? 0.45);
+if (generic.recall < MIN_GENERIC) {
+  console.error('');
+  console.error('失败:通用源 recall@5 ' + pct(generic.recall) + ' 低于回归闸门 ' + pct(MIN_GENERIC));
   process.exit(1);
 }
 console.log('');

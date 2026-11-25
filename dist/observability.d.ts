@@ -32,11 +32,16 @@ export declare class RebuildLogger {
     private stats;
     private lastStatsWrite;
     private readonly statsIntervalMs;
+    /** 日志保留天数(0 = 永不清理);按天滚动的文件靠它兜住磁盘。 */
+    private readonly retainDays;
+    private lastPruneAt;
+    private readonly pruneIntervalMs;
     constructor(opts: {
         logDir: string;
         enabled: boolean;
         includeFragments: boolean;
         logger: LoggerLike;
+        retainDays?: number;
     });
     /** 当前轮日志文件名(按天滚动)。 */
     private todayFile;
@@ -56,6 +61,13 @@ export declare class RebuildLogger {
         error?: string;
         fragments?: string[];
     }): void;
+    /**
+     * 删除超过保留天数的按天日志文件。
+     *
+     * 只认自己写出来的命名(recall-YYYY-MM-DD.log),别的文件一律不碰 —— 用户可能把
+     * logDir 指到一个共用目录,误删别人的日志比留着旧日志糟糕得多。
+     */
+    pruneOldLogs(): void;
     /** 原子写 stats.json(节流外也可主动调用)。 */
     flushStats(): void;
     /** 当前累计统计(读给宿主用)。 */

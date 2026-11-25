@@ -983,5 +983,130 @@ const { buildFragments: _b } = await import(path.join(dist, 'rebuild.js')).catch
 // buildFragments 未导出,改为从源码验证配置默认值预算口径
 check('配置预算默认值合理', cfg.rebuild.maxMemoryChars >= 50 && cfg.rebuild.maxTotalChars > cfg.rebuild.maxMemoryChars);
 
+// ── 4. P0 回归:自注入回流 / 通用源重读 / 日志保留 ──────────────
+console.log('[4] P0 回归(注入回流、源重读、日志保留)');
+{
+  // 4.1 查询构建:剔除自家注入与其它插件的原文召回
+  const qcfg = plugin.Config({ query: { tailMessages: 4 } });
+  const inj1 = mkMsg('plugin:recall-rebuild', '<reconstructed-memory>冰美式 手冲 92 度</reconstructed-memory>', { form: 'recall' });
+  const inj2 = mkMsg('plugin:memory', '<memory>旧原文召回 耶加雪菲</memory>', { form: 'recall' });
+  const convo = [
+    mkMsg('user', '我最近想换咖啡豆'),
+    mkMsg('assistant', '可以先从浅烘试起'),
+    mkMsg('user', '那器具呢'),
+    inj1,
+    inj2,
+    mkMsg('user', '继续'),
+  ];
+  const q = rc.buildRecallQuery(convo, qcfg);
+  check('query:剔除自家注入文本', !q.includes('冰美式'), q);
+  check('query:剔除其它插件的原文召回', !q.includes('耶加雪菲'), q);
+  check('query:注入被剔除后仍保留用户原话', q.includes('浅烘') && q.includes('继续'), q);
+  check('query:注入不挤占末尾窗口', q.includes('我最近想换咖啡豆'), q);
+
+  // 4.2 通用源按 refreshMs 重读;失败或关闭时行为可预期
+  const { makeTextStore } = await import(distUrl + 'sources/kit.js');
+  const loggerLike = { info() {}, warn() {}, error() {}, debug() {} };
+  const docA = { id: 'a', text: '蓝绿部署 回滚 演练', hints: ['部署'], scene: 's', family: 'f', type: 'note', ts: '' };
+  const docB = { id: 'b', text: 'kafka 分区 扩容', hints: ['kafka'], scene: 's', family: 'f', type: 'note', ts: '' };
+  let reloads = 0;
+  const store = makeTextStore('测试源', [docA], loggerLike, {
+    reload: () => { reloads += 1; return [docA, docB]; },
+    refreshMs: 50,
+  });
+  check('source:打开时看不到新条目', store.search('kafka', 5).length === 0);
+  await new Promise((r) => setTimeout(r, 60));
+  const fresh = store.search('kafka', 5);
+  check('source:超过 refreshMs 后重读命中新条目', fresh.length === 1 && fresh[0].id === 'b', JSON.stringify(fresh.map((x) => x.id)));
+  check('source:重读后旧条目仍在', store.search('蓝绿部署', 5).some((x) => x.id === 'a'));
+  check('source:同一窗口内只重读一次', reloads === 1, String(reloads));
+
+  const store2 = makeTextStore('测试源2', [docA], loggerLike, {
+    reload: () => { throw new Error('boom'); },
+    refreshMs: 1,
+  });
+  await new Promise((r) => setTimeout(r, 5));
+  check('source:重读失败沿用旧快照', store2.search('蓝绿部署', 5).some((x) => x.id === 'a'));
+
+  let never = 0;
+  const store3 = makeTextStore('测试源3', [docA], loggerLike, {
+    reload: () => { never += 1; return [docB]; },
+    refreshMs: 0,
+  });
+  await new Promise((r) => setTimeout(r, 5));
+  store3.search('kafka', 5);
+  check('source:refreshMs=0 不重读(旧行为)', never === 0, String(never));
+
+  // 4.3 日志保留:只删自己命名的过期按天文件
+  const { RebuildLogger } = await import(distUrl + 'observability.js');
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-logs-'));
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const todayName = 'recall-' + now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + '.log';
+  const mk = (name) => fs.writeFileSync(path.join(logDir, name), '{}\n');
+  mk('recall-2020-01-01.log');
+  mk(todayName);
+  mk('other-plugin.log');
+  mk('stats.json');
+  const rl = new RebuildLogger({ logDir, enabled: true, includeFragments: false, logger: loggerLike, retainDays: 30 });
+  rl.pruneOldLogs();
+  check('logs:删除过期按天日志', !fs.existsSync(path.join(logDir, 'recall-2020-01-01.log')));
+  check('logs:保留当天日志', fs.existsSync(path.join(logDir, todayName)));
+  check('logs:不碰非本插件文件', fs.existsSync(path.join(logDir, 'other-plugin.log')) && fs.existsSync(path.join(logDir, 'stats.json')));
+  const rl0 = new RebuildLogger({ logDir, enabled: true, includeFragments: false, logger: loggerLike, retainDays: 0 });
+  mk('recall-2019-05-05.log');
+  rl0.pruneOldLogs();
+  check('logs:retainDays=0 不删任何日志', fs.existsSync(path.join(logDir, 'recall-2019-05-05.log')));
+  fs.rmSync(logDir, { recursive: true, force: true });
+
+  check('config:sourceRefreshMs 默认 60s', cfg.sourceRefreshMs === 60_000, String(cfg.sourceRefreshMs));
+  check('config:observability.retainDays 默认 30', cfg.observability.retainDays === 30, String(cfg.observability.retainDays));
+}
+// ── 5. 打分:长度归一化 ──────────────────────────────────────
+console.log('[5] 打分长度归一化');
+{
+  const { lengthFactor, LENGTH_REF, LENGTH_FLOOR } = await import(distUrl + 'store.js');
+  check('length:短正文不打折', lengthFactor(30) === 1 && lengthFactor(LENGTH_REF) === 1);
+  check('length:长正文折减', lengthFactor(LENGTH_REF * 4) < 1);
+  check('length:折减不低于地板', lengthFactor(100_000) >= LENGTH_FLOOR);
+  check('length:归一化单调', lengthFactor(200) > lengthFactor(800));
+  check('length:非法长度按不折减', lengthFactor(NaN) === 1 && lengthFactor(-5) === 1);
+
+  // 同一批记忆里,一句话直击要害的短条目应当压过「顺带提到」的长流水账
+  const { makeTextStore } = await import(distUrl + 'sources/kit.js');
+  const loggerLike = { info() {}, warn() {}, error() {}, debug() {} };
+  const longText = '今天开会讨论了很多事情,' + '顺便提了一下 kafka '.repeat(20) + '然后散会';
+  const docs = [
+    { id: 'long', text: longText, hints: [], scene: '会议', family: 'f', type: 'note', ts: '' },
+    { id: 'short', text: 'kafka 分区扩容要改配置', hints: [], scene: '运维', family: 'f', type: 'note', ts: '' },
+  ];
+  const st = makeTextStore('归一化测试', docs, loggerLike);
+  const hits = st.search('kafka 扩容', 5).map((r) => r.id);
+  check('length:短而准的条目排在长流水账前', hits[0] === 'short', JSON.stringify(hits));
+}
+// ── 6. P2:未知源显式标注 / sources 子命令解析 ─────────────────
+console.log('[6] 未知源标注与 sources 子命令');
+{
+  const { openSource: openSrc } = await import(distUrl + 'sources/registry.js');
+  const silent = { debug() {}, info() {}, warn() {}, error() {} };
+  const warns = [];
+  const noisy = { debug() {}, info() {}, warn: (m) => warns.push(String(m)), error() {} };
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-unknown-'));
+  const unknownStore = openSrc('not-a-source', { dataDir: path.join(tmpHome, 'memory'), cwd: tmpHome, logger: noisy });
+  check('source:未知 id 在 label 里显式标注', unknownStore.label.includes('not-a-source'), unknownStore.label);
+  check('source:未知 id 的警告列出合法 id', warns.some((w) => w.includes('prime') && w.includes('not-a-source')), warns.join(' | '));
+  unknownStore.close();
+  const silentStore = openSrc('auto', { dataDir: path.join(tmpHome, 'memory'), cwd: tmpHome, logger: silent });
+  check('source:空环境不抛错', typeof silentStore.label === 'string');
+  silentStore.close();
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+
+  const { parseCommandLine } = await import(distUrl + 'commands.js');
+  check('cmd:sources 被识别为子命令', parseCommandLine('sources').sub === 'sources');
+  check('cmd:未知子命令仍为 unknown', parseCommandLine('nope').sub === 'unknown');
+  check('cmd:空输入回落 help', parseCommandLine('').sub === 'help');
+  check('cmd:list --all 解析正确', parseCommandLine('list --all').all === true);
+  check('cmd:edit 保留多词内容', parseCommandLine('edit m1 新的 内容').args.join(' ') === 'm1 新的 内容');
+}
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);

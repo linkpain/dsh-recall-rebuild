@@ -3,6 +3,10 @@
  *
  * 与 sqlite-sources.ts 同一思路:每个插件只描述「数据在哪、长什么样」,
  * 解析与检索全部复用 kit.ts 的原语。
+ *
+ * 每个 open* 都收一个 refreshMs:传 0(缺省)表示「打开时读一次,之后不再变」;
+ * 传正数表示每隔这么久在检索路径上重读一次 —— 文件系记忆库是「边聊边写」的,
+ * 读一次就定住会让启动后新记的东西永远召回不到,只能重启 DSH 才生效。
  */
 import * as path from 'node:path';
 import { dshHome, userHome, isFile, isDir, walkFiles, readMarkdownDocs, readJsonDocs, readJsonlDocs, makeTextStore, } from './kit.js';
@@ -28,49 +32,58 @@ function collectMarkdown(root, type, opts = {}) {
     return out;
 }
 /** @jipika/dsh-memory:~/.dsh/memory/topics/*.md 分片(每行 "- [日期] 事实")。 */
-export function openJipikaSource(logger) {
+export function openJipikaSource(logger, refreshMs = 0) {
     const root = path.join(dshHome(), 'memory', 'topics');
-    const docs = collectMarkdown(root, 'jipika', { relPrefix: 'topics', maxFiles: 2000 });
+    const collect = () => collectMarkdown(root, 'jipika', { relPrefix: 'topics', maxFiles: 2000 });
+    const docs = collect();
     if (docs.length === 0)
         return emptyStore('@jipika/dsh-memory', logger, '未找到 topics 分片');
-    return makeTextStore('@jipika/dsh-memory', docs, logger);
+    return makeTextStore('@jipika/dsh-memory', docs, logger, { reload: collect, refreshMs });
 }
 /** @furongjun1999/dsh-memory(灵枢):~/.dsh/.dsh-memory/data/mdcg 下的节点 Markdown。 */
-export function openLingshuSource(logger) {
+export function openLingshuSource(logger, refreshMs = 0) {
     const roots = [
         process.env.MDCG_DATA_ROOT?.trim(),
         path.join(dshHome(), '.dsh-memory', 'data', 'mdcg'),
         path.join(userHome(), '.dsh-memory', 'data', 'mdcg'),
     ].filter((x) => Boolean(x));
-    const docs = [];
-    for (const root of roots) {
-        if (!isDir(root))
-            continue;
-        // 节点散在各层子目录(contextual/、anchor/ 等),跳过索引与预热缓存目录
-        docs.push(...collectMarkdown(root, 'lingshu', { maxFiles: 4000, skipDirs: ['_hot', '_index', '_trash', 'archive'] }));
-        if (docs.length > 0)
-            break;
-    }
+    const collect = () => {
+        const docs = [];
+        for (const root of roots) {
+            if (!isDir(root))
+                continue;
+            // 节点散在各层子目录(contextual/、anchor/ 等),跳过索引与预热缓存目录
+            docs.push(...collectMarkdown(root, 'lingshu', { maxFiles: 4000, skipDirs: ['_hot', '_index', '_trash', 'archive'] }));
+            if (docs.length > 0)
+                break;
+        }
+        return docs;
+    };
+    const docs = collect();
     if (docs.length === 0)
         return emptyStore('@furongjun1999/dsh-memory', logger, '未找到 mdcg 节点');
-    return makeTextStore('@furongjun1999/dsh-memory', docs, logger);
+    return makeTextStore('@furongjun1999/dsh-memory', docs, logger, { reload: collect, refreshMs });
 }
 /** dsh-mnemon:~/.mnemon/runtime/{MEMORY.md,USER.md} + ~/.mnemon/documents/active/*.md。 */
-export function openMnemonSource(logger) {
+export function openMnemonSource(logger, refreshMs = 0) {
     const root = path.join(userHome(), '.mnemon');
-    const docs = [];
-    for (const name of ['MEMORY.md', 'USER.md']) {
-        const file = path.join(root, 'runtime', name);
-        if (isFile(file))
-            docs.push(...readMarkdownDocs(file, 'runtime/' + name, 'mnemon'));
-    }
-    docs.push(...collectMarkdown(path.join(root, 'documents', 'active'), 'mnemon', { relPrefix: 'documents' }));
+    const collect = () => {
+        const docs = [];
+        for (const name of ['MEMORY.md', 'USER.md']) {
+            const file = path.join(root, 'runtime', name);
+            if (isFile(file))
+                docs.push(...readMarkdownDocs(file, 'runtime/' + name, 'mnemon'));
+        }
+        docs.push(...collectMarkdown(path.join(root, 'documents', 'active'), 'mnemon', { relPrefix: 'documents' }));
+        return docs;
+    };
+    const docs = collect();
     if (docs.length === 0)
         return emptyStore('dsh-mnemon', logger, '未找到 runtime/documents');
-    return makeTextStore('dsh-mnemon', docs, logger);
+    return makeTextStore('dsh-mnemon', docs, logger, { reload: collect, refreshMs });
 }
 /** dsh-longterm-memory:Obsidian 兼容 vault(vaultPath 由用户配置,这里探测常见位置)。 */
-export function openLongtermSource(cwd, logger) {
+export function openLongtermSource(cwd, logger, refreshMs = 0) {
     const candidates = [
         process.env.DSH_LONGTERM_VAULT?.trim(),
         path.join(cwd, '.dsh-longterm-memory'),
@@ -78,25 +91,41 @@ export function openLongtermSource(cwd, logger) {
         path.join(dshHome(), 'vault'),
         path.join(userHome(), 'Memory', 'ObsidianVault'),
     ].filter((x) => Boolean(x));
-    for (const root of candidates) {
-        if (!isDir(root))
-            continue;
-        const docs = collectMarkdown(root, 'longterm', { maxFiles: 3000, skipDirs: ['.obsidian', '.trash'] });
-        if (docs.length > 0)
-            return makeTextStore('dsh-longterm-memory', docs, logger);
-    }
-    return emptyStore('dsh-longterm-memory', logger, '未配置 vaultPath');
+    let usedRoot = '';
+    const collect = () => {
+        // 刷新时沿用首次选中的 vault:用户新建一个空目录不该让检索悄悄换库
+        if (usedRoot)
+            return collectMarkdown(usedRoot, 'longterm', { maxFiles: 3000, skipDirs: ['.obsidian', '.trash'] });
+        for (const root of candidates) {
+            if (!isDir(root))
+                continue;
+            const docs = collectMarkdown(root, 'longterm', { maxFiles: 3000, skipDirs: ['.obsidian', '.trash'] });
+            if (docs.length > 0) {
+                usedRoot = root;
+                return docs;
+            }
+        }
+        return [];
+    };
+    const docs = collect();
+    if (docs.length === 0)
+        return emptyStore('dsh-longterm-memory', logger, '未配置 vaultPath');
+    return makeTextStore('dsh-longterm-memory', docs, logger, { reload: collect, refreshMs });
 }
 /** dsh-memory-hub:~/.dsh/memory-hub/{knowledge,records,pending} 下的 Markdown 记录。 */
-export function openHubSource(logger) {
+export function openHubSource(logger, refreshMs = 0) {
     const root = path.join(dshHome(), 'memory-hub');
-    const docs = [];
-    for (const sub of ['knowledge', 'records', 'pending']) {
-        docs.push(...collectMarkdown(path.join(root, sub), 'hub', { relPrefix: sub, maxFiles: 2000 }));
-    }
+    const collect = () => {
+        const docs = [];
+        for (const sub of ['knowledge', 'records', 'pending']) {
+            docs.push(...collectMarkdown(path.join(root, sub), 'hub', { relPrefix: sub, maxFiles: 2000 }));
+        }
+        return docs;
+    };
+    const docs = collect();
     if (docs.length === 0)
         return emptyStore('dsh-memory-hub', logger, '未找到 knowledge/records');
-    return makeTextStore('dsh-memory-hub', docs, logger);
+    return makeTextStore('dsh-memory-hub', docs, logger, { reload: collect, refreshMs });
 }
 /** 把若干 JSON 文件读成 Doc[](不存在的文件自动跳过)。 */
 function collectJson(files, type) {
@@ -109,37 +138,43 @@ function collectJson(files, type) {
     return out;
 }
 /** dsh-memory-engine / @wilshi/dsh-memory-engine:<DSH_HOME>/memory-engine/memories.json。 */
-export function openMemoryEngineSource(logger) {
+export function openMemoryEngineSource(logger, refreshMs = 0) {
     const dir = path.join(dshHome(), 'memory-engine');
-    const docs = collectJson([
+    const collect = () => collectJson([
         { file: path.join(dir, 'memories.json'), rel: 'memories.json' },
         { file: path.join(dir, 'archive.json'), rel: 'archive.json' },
     ], 'memory-engine');
+    const docs = collect();
     if (docs.length === 0)
         return emptyStore('dsh-memory-engine', logger, '未找到 memories.json');
-    return makeTextStore('dsh-memory-engine', docs, logger);
+    return makeTextStore('dsh-memory-engine', docs, logger, { reload: collect, refreshMs });
 }
 /** dsh-memory-tiers:<DSH_HOME>/storages/memory 的六层文件(L1/L2/L3/DL1/DL2/DL3)。 */
-export function openMemoryTiersSource(logger) {
+export function openMemoryTiersSource(logger, refreshMs = 0) {
     const dir = path.join(dshHome(), 'storages', 'memory');
     const layers = ['L1.json', 'L2.json', 'L3.json', 'DL1.json', 'DL2.json', 'DL3.json'];
-    const docs = collectJson(layers.map((name) => ({ file: path.join(dir, name), rel: name.replace('.json', '') })), 'tiers');
+    const collect = () => collectJson(layers.map((name) => ({ file: path.join(dir, name), rel: name.replace('.json', '') })), 'tiers');
+    const docs = collect();
     if (docs.length === 0)
         return emptyStore('dsh-memory-tiers', logger, '未找到六层记忆文件');
-    return makeTextStore('dsh-memory-tiers', docs, logger);
+    return makeTextStore('dsh-memory-tiers', docs, logger, { reload: collect, refreshMs });
 }
 /** @restregular/dsh-memory:~/.dsh/memory-vector/*.jsonl(按 scope 分文件)。 */
-export function openVectorJsonlSource(logger) {
+export function openVectorJsonlSource(logger, refreshMs = 0) {
     const root = path.join(dshHome(), 'memory-vector');
     if (!isDir(root))
         return emptyStore('@restregular/dsh-memory', logger, '未找到 memory-vector');
-    const files = walkFiles(root, { exts: ['.jsonl'], maxFiles: 200 }).filter((f) => !/approvals\.jsonl$/i.test(f));
-    const docs = [];
-    for (const file of files) {
-        const rel = path.relative(root, file).replace(/\\/g, '/');
-        docs.push(...readJsonlDocs(file, rel, 'memory-vector'));
-    }
+    const collect = () => {
+        const files = walkFiles(root, { exts: ['.jsonl'], maxFiles: 200 }).filter((f) => !/approvals\.jsonl$/i.test(f));
+        const docs = [];
+        for (const file of files) {
+            const rel = path.relative(root, file).replace(/\\/g, '/');
+            docs.push(...readJsonlDocs(file, rel, 'memory-vector'));
+        }
+        return docs;
+    };
+    const docs = collect();
     if (docs.length === 0)
         return emptyStore('@restregular/dsh-memory', logger, 'jsonl 为空');
-    return makeTextStore('@restregular/dsh-memory', docs, logger);
+    return makeTextStore('@restregular/dsh-memory', docs, logger, { reload: collect, refreshMs });
 }

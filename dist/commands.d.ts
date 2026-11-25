@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { RecallRebuildConfig } from './config.js';
 import type { LoggerLike, MemoryStore } from './store.js';
 import type { ConsolidatedMemory, ConsolidatedStore } from './consolidated.js';
-export type CommandSub = 'now' | 'list' | 'edit' | 'forget' | 'help' | 'unknown';
+export type CommandSub = 'now' | 'list' | 'edit' | 'forget' | 'sources' | 'help' | 'unknown';
 /** 解析后的命令参数(纯函数,可测)。 */
 export interface CommandArgs {
     sub: CommandSub;
@@ -40,4 +40,10 @@ export declare function formatMemoryList(mems: ConsolidatedMemory[], opts: {
     now: number;
 }): string;
 /** 注册巩固层交互命令;宿主没有 commands 服务时静默跳过。 */
-export declare function registerRecallRebuildCommands(ctx: Context, store: MemoryStore, consolidated: ConsolidatedStore, cfg: RecallRebuildConfig, logger: LoggerLike): void;
+export declare function registerRecallRebuildCommands(ctx: Context, store: MemoryStore, consolidated: ConsolidatedStore, cfg: RecallRebuildConfig, logger: LoggerLike, 
+/** 记忆源诊断(可选):返回每种源是否探测到;未提供时 sources 子命令说明不可用。 */
+describeSources?: () => Array<{
+    id: string;
+    label: string;
+    present: boolean;
+}>): void;

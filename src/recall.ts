@@ -104,10 +104,17 @@ export function appendInjection(messages: MsgLike[], injection: MsgLike): MsgLik
   return [...messages, injection];
 }
 
-/** 用会话末尾消息构建召回查询(去重、截断预算)。 */
-function buildRecallQuery(messages: MsgLike[] | undefined, cfg: RecallRebuildConfig): string {
+/**
+ * 用会话末尾消息构建召回查询(去重、截断预算)。
+ *
+ * 只取「人说的话」:本插件自己的注入(以及别的插件的原文召回)在下一轮已经躺在历史里,
+ * 把它们算进查询会形成自我强化回路 —— 上一轮召回到什么,这一轮的检索词就像什么,
+ * 于是下一轮又召回同一批,越滚越偏。先剔除注入、再取末尾窗口,顺带让窗口不被注入挤占。
+ */
+export function buildRecallQuery(messages: MsgLike[] | undefined, cfg: RecallRebuildConfig): string {
   if (!Array.isArray(messages)) return '';
-  const tail = messages.slice(-cfg.query.tailMessages);
+  const spoken = messages.filter((m) => !isOurInjection(m) && !isOtherPluginRecall(m));
+  const tail = spoken.slice(-cfg.query.tailMessages);
   const texts: string[] = [];
   let total = 0;
   for (let i = tail.length - 1; i >= 0; i--) {

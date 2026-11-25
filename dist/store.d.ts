@@ -48,6 +48,12 @@ export declare const DECAY_FLOOR = 0.5;
  * 时间戳无法解析时返回 1(信息缺失不惩罚,与「无时间」同义)。
  */
 export declare function decayFactor(timestampStr: string, now: number): number;
+/** 不打折的正文长度(字)。 */
+export declare const LENGTH_REF = 120;
+/** 归一化系数下限:再长的正文也保留 40% 分,避免长文档被一刀切埋掉。 */
+export declare const LENGTH_FLOOR = 0.4;
+/** 正文长度 → 打分系数(≤1)。 */
+export declare function lengthFactor(bodyLen: number): number;
 /**
  * 按「优先级 × 时效衰减」重排并截断:检索侧统一出口。
  * 无论底层是 FTS、LIKE 打分还是巩固层条目,进入重建前都过这一道,

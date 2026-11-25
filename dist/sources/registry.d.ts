@@ -6,6 +6,11 @@ export interface SourceContext {
     /** 当前工作区(决定工作区级记忆去哪找)。 */
     cwd: string;
     logger: LoggerLike;
+    /**
+     * 通用源(非 prime 实时查询)的重读间隔(ms);0/缺省 = 打开时读一次就定住。
+     * 由配置项 source.refreshMs 传下来,auto 与显式指定都适用。
+     */
+    refreshMs?: number;
 }
 /** 一个可识别的记忆源。 */
 export interface SourceSpec {

@@ -77,6 +77,8 @@ export interface ObservabilityOptions {
   includeFragments: boolean;
   /** 是否写统计文件 stats.json(30s 节流)。 */
   statsEnabled: boolean;
+  /** 日志保留天数:更早的按天日志文件在写日志时顺手删除;0 = 永不删除。 */
+  retainDays: number;
 }
 
 /** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
@@ -167,6 +169,14 @@ export interface RecallRebuildConfig {
    * - 'memory-vector'   @restregular/dsh-memory JSONL $DSH_HOME/memory-vector/*.jsonl
    */
   source: string;
+  /**
+   * 通用记忆源(prime 之外的全部适配器)的重读间隔(ms)。
+   *
+   * prime 是每次检索实时查库,新记忆立刻可见;其余源把条目读进内存换检索速度,
+   * 读一次就定住意味着插件启动后新写入的记忆要重启才召回得到。给个间隔就让它们
+   * 在检索路径上按需重读。0 = 关闭(回到「只读一次」的旧行为)。
+   */
+  sourceRefreshMs: number;
   rebuild: RebuildOptions;
   inject: InjectOptions;
   query: QueryOptions;
@@ -181,6 +191,7 @@ export const recallRebuildSchema = Schema.object({
   dataDir: Schema.string().default(''),
   // 不锁死枚举:新增记忆源适配只改 src/sources/registry.ts,配置面无需同步发版
   source: Schema.string().default('auto'),
+  sourceRefreshMs: Schema.number().min(0).max(3_600_000).default(60_000),
   rebuild: Schema.object({
     enabled: Schema.boolean().default(true),
     maxResults: Schema.number().min(1).max(20).default(5),
@@ -210,6 +221,7 @@ export const recallRebuildSchema = Schema.object({
     logDir: Schema.string().default(''),
     includeFragments: Schema.boolean().default(true),
     statsEnabled: Schema.boolean().default(true),
+    retainDays: Schema.number().min(0).max(3650).default(30),
   }).default({}),
   consolidate: Schema.object({
     enabled: Schema.boolean().default(true),
