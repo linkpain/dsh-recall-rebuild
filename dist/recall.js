@@ -33,6 +33,10 @@ function blocksToText(content) {
     }
     return out;
 }
+/** 从一条消息里取出文本(消息 → content 块数组 → 拼接)。 */
+function msgText(m) {
+    return blocksToText(m?.content);
+}
 /** 判断一条消息是否为其它插件(prime-memory 等)注入的原文召回。 */
 export function isOtherPluginRecall(m) {
     const s = m.source;
@@ -44,6 +48,17 @@ export function isOtherPluginRecall(m) {
         return true;
     return false;
 }
+/** 判断一条消息是否本插件自己注入过的召回(source.kind 由 buildInjectionMessage 产出)。 */
+export function isOurInjection(m) {
+    return m.source?.kind === 'plugin:recall-rebuild';
+}
+/**
+ * 把注入消息追加到批次末尾 —— 唯一对提示词缓存友好的位置(理由见文件头注释)。
+ * 绝不插头部、绝不改写历史中部:那会让逐字节前缀在注入点断开,整段历史缓存全废。
+ */
+export function appendInjection(messages, injection) {
+    return [...messages, injection];
+}
 /** 用会话末尾消息构建召回查询(去重、截断预算)。 */
 function buildRecallQuery(messages, cfg) {
     if (!Array.isArray(messages))
@@ -52,7 +67,7 @@ function buildRecallQuery(messages, cfg) {
     const texts = [];
     let total = 0;
     for (let i = tail.length - 1; i >= 0; i--) {
-        const t = blocksToText(tail[i]).trim();
+        const t = msgText(tail[i]).trim();
         if (!t)
             continue;
         const take = t.slice(0, 500);
@@ -236,7 +251,7 @@ export function registerRecallRebuild(ctx, store, cfg, logger, namespaces, obsLo
                 return decision;
             // 提取当前 IM 用户键(桌面/无法识别 → null → 不做隔离)
             const userKey = namespaces
-                ? extractUserKey(decision.messages.map(blocksToText), cfg.user.sourceTagPattern)
+                ? extractUserKey(decision.messages.map(msgText), cfg.user.sourceTagPattern)
                 : null;
             let memories = store.search(query, cfg.rebuild.maxResults);
             const logBase = () => ({
@@ -288,21 +303,25 @@ export function registerRecallRebuild(ctx, store, cfg, logger, namespaces, obsLo
             const injection = buildInjectionMessage(rebuilt.text, rebuilt.sourceIds, cfg);
             // 记下本轮真正被重建进提示词的记忆,下一轮(同 agent)降权
             rememberInjected(agentKey, rebuilt.sourceIds, Date.now());
+            // 注入位置只能追加在末尾:插头部/改中部都会让逐字节前缀在注入点断开,
+            // 整段历史缓存每轮全废(见文件头注释)。replace 只在「本 step 批次里已有
+            // 本插件自己的注入」时原位替换 —— 同 step 重试场景,位置不变、前缀无损。
             let injectionKind = 'appended';
-            if (cfg.inject.strategy === 'replace') {
-                const idx = decision.messages.findIndex(isOtherPluginRecall);
-                if (idx >= 0) {
-                    const msgs = [...decision.messages];
-                    msgs[idx] = injection;
-                    injectionKind = 'replaced';
-                    if (obsLog)
-                        obsLog.log({ ...logBase(), rebuilt: rebuilt.text, injection: injectionKind, latencyMs: Date.now() - startedAt });
-                    return { kind: 'enter', messages: msgs };
-                }
+            let messages = decision.messages;
+            const ownIdx = cfg.inject.strategy === 'replace' ? decision.messages.findIndex(isOurInjection) : -1;
+            if (ownIdx >= 0) {
+                messages = [...decision.messages];
+                messages[ownIdx] = injection;
+                injectionKind = 'replaced';
+            }
+            else {
+                messages = appendInjection(decision.messages, injection);
             }
             if (obsLog)
                 obsLog.log({ ...logBase(), rebuilt: rebuilt.text, injection: injectionKind, latencyMs: Date.now() - startedAt });
-            return { kind: 'enter', messages: [injection, ...decision.messages] };
+            // 必须展开 decision:startsRequestSeries 等字段由宿主/其它监听器设置,
+            // 只返回 { kind, messages } 会把它们丢掉(宿主文档明确要求 spread)。
+            return { ...decision, messages };
         }
         catch (err) {
             logger.warn(`[recall-rebuild] 本轮重建注入失败(跳过): ${err instanceof Error ? err.message : String(err)}`);

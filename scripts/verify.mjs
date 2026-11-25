@@ -862,6 +862,121 @@ check('sem:精排不改动入参数组', (() => {
 check('sem:单条列表原样返回', rerankBySemantic([COFFEE], '咖啡').length === 1);
 check('sem:空列表安全', rerankBySemantic([], '咖啡').length === 0);
 
+// ── 2l. 注入位置:只能追加在末尾(提示词缓存前缀不变性) ───────
+// 背景:旧实现把注入插在批次头部(`[injection, ...messages]`)或在历史中部原位替换
+// 其它插件的召回。提示词缓存按逐字节前缀命中,这两种写法都会在注入点切断前缀,
+// 让整段历史缓存每轮全废。这里锁死「只追加在末尾」这一性质。
+console.log('[2l] 注入位置与提示词缓存前缀');
+const rc = await import(`${distUrl}recall.js`);
+
+const mkMsg = (kind, text, extra = {}) => ({ source: { kind, ...extra }, content: [{ type: 'text', text }] });
+
+// 纯函数层:appendInjection 不改入参、注入落在末尾
+const baseMsgs = [mkMsg('user', 'a'), mkMsg('assistant', 'b')];
+const injMsg = mkMsg('plugin:recall-rebuild', 'c', { form: 'recall' });
+const appended = rc.appendInjection(baseMsgs, injMsg);
+check('inject:appendInjection 注入落在末尾', appended[appended.length - 1] === injMsg);
+check('inject:appendInjection 长度 +1', appended.length === baseMsgs.length + 1);
+check('inject:appendInjection 不改动入参数组', baseMsgs.length === 2 && baseMsgs[0].content[0].text === 'a');
+check('inject:isOurInjection 认自家注入', rc.isOurInjection(injMsg) === true);
+check('inject:isOurInjection 不认别的插件', rc.isOurInjection(mkMsg('plugin:memory', 'x', { form: 'recall' })) === false);
+check('inject:isOtherPluginRecall 认 prime 的召回',
+  rc.isOtherPluginRecall(mkMsg('plugin:memory', 'x', { form: 'recall' })) === true);
+
+/** 假 ctx:捕获 pre-step 监听器,并提供模型路由与假 LLM 流。 */
+function fakeRecallCtx() {
+  const listeners = [];
+  const ctx = {
+    on: (event, fn, opts) => {
+      listeners.push({ event, fn, opts });
+      return fn;
+    },
+    get: (k) => (k === 'agentDefaultModel'
+      ? { currentSelection: () => ({ provider: 'p', model: 'm' }) }
+      : undefined),
+    llm: {
+      stream: async function* () {
+        yield { type: 'text-delta', text: '你上次也提过冰美式咖啡。' };
+      },
+    },
+  };
+  return { ctx, listeners };
+}
+
+const fakeStore = {
+  ok: true,
+  search: () => [{
+    id: 'm1', content: '用户喜欢喝冰美式咖啡,常去公司楼下的星巴克',
+    type: 'preference', sceneName: '咖啡偏好', family: '', priority: 5, timestampStr: '',
+  }],
+};
+
+/** 跑一次真实的 pre-step 监听器。 */
+async function runPreStep(listener, messages, nextDecision) {
+  return listener({ agent: { id: 'ag-cache' }, messages, signal: undefined }, async () => nextDecision);
+}
+
+const { ctx: rctx, listeners: rls } = fakeRecallCtx();
+rc.registerRecallRebuild(rctx, fakeStore, plugin.Config({}), {
+  debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+});
+const preStep = rls.find((l) => l.event === 'agent/pre-step');
+check('inject:注册了 agent/pre-step 监听器', preStep !== undefined);
+
+// 第一轮:批次里只有新用户消息
+const turn1Base = [mkMsg('user', '我下午想喝点冰的咖啡')];
+const res1 = await runPreStep(preStep.fn, turn1Base, {
+  kind: 'enter', messages: turn1Base, startsRequestSeries: true,
+});
+check('inject:第一轮注入落在批次末尾',
+  res1.messages.length === turn1Base.length + 1
+  && rc.isOurInjection(res1.messages[res1.messages.length - 1]));
+check('inject:保留 decision 的其它字段(startsRequestSeries)',
+  res1.startsRequestSeries === true, `got ${res1.startsRequestSeries}`);
+check('inject:不改动宿主传入的批次数组', turn1Base.length === 1);
+
+// 第二轮:宿主传给 pre-step 的 payload.messages 是**本 step 领取到的新消息批次**
+// (inbox.claim),不是整段历史;历史由宿主在 step() 里按序 append 累积。
+// 缓存不变性因此要这样验:本轮请求的 messages = 上一轮请求 + 本轮批次 + 本轮注入,
+// 前缀(上一轮请求 + 本轮批次)必须逐条原样 —— 旧注入绝不能被就地改写。
+const turn2Base = [mkMsg('user', '今天也一样,来一杯')];
+const res2 = await runPreStep(preStep.fn, turn2Base, { kind: 'enter', messages: turn2Base });
+check('inject:第二轮批次内只有新消息,注入仍追加在末尾',
+  res2.messages.length === turn2Base.length + 1
+  && rc.isOurInjection(res2.messages[res2.messages.length - 1]));
+check('inject:第二轮不改动新消息本身',
+  res2.messages[0] === turn2Base[0]);
+// 模拟宿主累积:第 1 轮请求 → 第 2 轮请求,前缀必须逐字节不变
+const request1 = [...res1.messages];
+const request2 = [...request1, ...res2.messages];
+check('inject:相邻两轮请求的公共前缀 = 第一轮请求全长',
+  request2.slice(0, request1.length).every((m, i) => m === request1[i]));
+check('inject:第二轮新增内容只在本轮批次与末尾注入',
+  request2.length === request1.length + turn2Base.length + 1);
+
+// replace 策略也不许动历史中部:批次里有 prime 的原文召回时,它必须原地不动,
+// 本插件的重建片段照样追加到末尾。
+const foreignRecall = mkMsg('plugin:memory', '<memory>旧原文召回</memory>', { form: 'recall' });
+const turn3Base = [foreignRecall, mkMsg('user', '继续说咖啡')];
+const res3 = await runPreStep(preStep.fn, turn3Base, { kind: 'enter', messages: turn3Base });
+check('inject:replace 策略不原地改写其它插件的召回',
+  res3.messages[0] === foreignRecall);
+check('inject:replace 策略仍追加在末尾',
+  res3.messages.length === turn3Base.length + 1
+  && rc.isOurInjection(res3.messages[res3.messages.length - 1]));
+
+// 同 step 重试:批次里已有本插件自己的注入 → 原位替换,不新增一条
+const ownPrev = mkMsg('plugin:recall-rebuild', '<reconstructed-memory>旧</reconstructed-memory>', { form: 'recall' });
+const turn4Base = [ownPrev, mkMsg('user', '再说一次')];
+const res4 = await runPreStep(preStep.fn, turn4Base, { kind: 'enter', messages: turn4Base });
+check('inject:同 step 重试原位替换自家注入',
+  res4.messages.length === turn4Base.length
+  && rc.isOurInjection(res4.messages[0])
+  && res4.messages[0] !== ownPrev);
+check('inject:原位替换不改动其余消息',
+  res4.messages[1] === turn4Base[1]);
+rc.resetRecentInjection();
+
 // ── 3. 重建引擎纯逻辑(不实际调用 LLM) ───────────────────────
 console.log('[3] rebuild 碎片组装预算');
 const { buildFragments: _b } = await import(path.join(dist, 'rebuild.js')).catch(() => ({}));

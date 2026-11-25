@@ -27,7 +27,13 @@ export interface RebuildOptions {
 }
 /** 注入策略与预算。 */
 export interface InjectOptions {
-    /** replace = 替换其它插件(如 prime-memory)已注入的原文召回;append = 追加一条重建消息。 */
+    /**
+     * 注入位置固定为「消息批次末尾」—— 提示词缓存按逐字节前缀命中,插头部或改写历史中部
+     * 都会在注入点切断前缀,让整段历史缓存每轮全废。两种策略的差别只在末尾:
+     * - replace = 本 step 批次里已有本插件自己的注入(同 step 重试)时原位替换,避免重复;
+     * - append  = 无条件追加一条新的重建消息。
+     * 其它插件的原文召回在任何策略下都不再被改写(改写历史中部是缓存杀手)。
+     */
     strategy: 'replace' | 'append';
     /** 注入正文单条字符上限。 */
     maxChars: number;

@@ -33,7 +33,8 @@
 - **多记忆源可插拔**:`source` 支持 dsh-prime-memory(SQLite FTS5)、@max-null/dsh-memory(JSON 记忆库)与 dsh-memory-palace(Markdown 文件)三种底层记忆,`auto` 自动探测,后续可继续扩展;
 - **IM 用户级命名空间隔离**:QQ/微信 多人共用角色时,自动解析桥接插件注入的 `<dsh_im_source>` sender 信息,把记忆按用户隔离——「用户 A 的记忆」不会注入给「用户 B」;同一人多会话记忆共享;隔离索引写在插件自己的目录,仍不碰底层记忆库;
 - **生成式重建**:在 `agent/pre-step` 用会话末尾消息召回碎片,LLM 重建为带语境/情绪/时间感的回忆片段,替代生硬原文注入;
-- **与生态共存不错位**:注入消息 `source.kind='plugin:recall-rebuild'`,不会被 prime-memory 当作新用户消息再次捕获/蒸馏;`replace` 策略原位替换对方的原文召回,`append` 策略追加,不重复注入;
+- **与生态共存不错位**:注入消息 `source.kind='plugin:recall-rebuild'`,不会被 prime-memory 当作新用户消息再次捕获/蒸馏;
+- **提示词缓存友好**:注入只**追加在消息批次末尾**,不插头部、不改写历史中部——两个相邻 step 的请求前缀逐字节相同,历史缓存不会被每轮的注入打断(插头部会让公共前缀直接归零,整段历史每轮重算);
 - **永不阻塞对话**:无记忆库/无模型路由/超时/重建失败,一律静默跳过本轮;
 - **重建质量可观测**:每轮在 `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` 写一条 JSONL 审计日志,「原始检索碎片 ↔ 重建后片段」同屏对比 + 注入方式/耗时/跳过原因,附带 `stats.json` 统计——零额外注入、零 token 成本,自己判断重建效果;
 - **睡眠巩固 + 联想扩散(长期记忆子系统)**:空闲时把累积的碎片「聚类 → LLM 抽象为稳定记忆 → 联想图扩散 → 低频遗忘降权」,巩固层条目在召回时优先注入、命中越用越稳、强关联主题顺带想起——更接近人脑的「夜间回放迁移到新皮层」;产出只存本插件目录,底层记忆库保持只读;
@@ -75,14 +76,14 @@ dsh plugin --profile <你的配置文件名> add dsh-recall-rebuild
       maxOutputChars: 600
       timeoutMs: 8000
     inject:
-      strategy: replace   # replace = 替换 prime-memory 的原文注入; append = 追加
+      strategy: replace   # replace = 批次内已有本插件注入时原位替换; append = 一律追加(两者都只动末尾)
 ```
 
 ## 工作原理
 
 ```mermaid
 flowchart LR
-    U["IM 用户新消息<br/>(带 &lt;dsh_im_source&gt; sender)"] --> P["agent/pre-step<br/>(本插件 prepend)"]
+    U["IM 用户新消息<br/>(带 &lt;dsh_im_source&gt; sender)"] --> P["agent/pre-step<br/>(本插件监听,注入追加在末尾)"]
     P --> K["提取当前用户键<br/>(senderId / chatId)"]
     P --> Q["构造召回查询<br/>(会话末尾消息)"]
     Q --> S[("记忆库<br/>prime(SQLite)/ dsh-memory(JSON)/ palace(Markdown)")]
@@ -105,7 +106,7 @@ flowchart LR
 ## 与现有插件的错开与共存
 
 - 注入消息 `source.kind` 用 v4 语义 `plugin:recall-rebuild`,与 prime-memory 的 `plugin:memory` 互不干扰;capture 侧只收 `source.kind==='user'`,天然不被二次捕获。
-- `strategy=replace` 时只替换本轮**已存在的**原文召回消息;没有则退化为追加,不重复注入。
+- 注入位置:一律**追加在消息批次末尾**(提示词缓存按逐字节前缀命中,插头部或改写历史中部都会在注入点切断前缀,让整段历史缓存每轮全废);`strategy=replace` 只在「本 step 批次里已有本插件自己的注入」时原位替换(同 step 重试场景),其它插件的原文召回**原地不动**,本插件片段照样追加在末尾。
 
 ## 配置项
 
@@ -122,7 +123,7 @@ flowchart LR
 | `rebuild.temperature` | `0.7` | 重建调用温度 |
 | `rebuild.maxTokens` | `1024` | 重建调用输出 token 上限 |
 | `rebuild.timeoutMs` | `8000` | 重建总超时;超时跳过本轮 |
-| `inject.strategy` | `replace` | `replace` = 原位替换 prime-memory 的原文召回;`append` = 追加 |
+| `inject.strategy` | `replace` | `replace` = 批次内已有本插件注入时原位替换(同 step 重试);`append` = 一律追加。两者都只动批次末尾,不改写历史中部 |
 | `inject.maxChars` | `1200` | 注入正文单条上限 |
 | `inject.includeSources` | `true` | 注入时附记忆来源 id 标注 |
 | `query.tailMessages` | `8` | 召回查询取会话末尾消息条数 |
@@ -194,7 +195,7 @@ flowchart LR
 - **`recall-YYYY-MM-DD.log`**:每轮一行 JSON,同一轮里 `fragments`(原始检索碎片)与 `rebuilt`(重建后片段)并排——直接对比同一份记忆的两种呈现,自己判断哪种更"像人";
 - **`stats.json`**:累计轮数 / 命中轮 / 重建成功 / 注入 / 替换数,看重建的覆盖面和替换率。
 
-字段速览:`round` 轮次、`userKey` 当前 IM 用户、`hitCount` 命中数、`memoryIds` 依据记忆 id、`fragments` 原始碎片、`rebuilt` 重建片段、`injection` 注入方式(`replaced` 替换了对方原文召回 / `appended` 追加 / `none` 未注入)、`latencyMs` 耗时、`error` 跳过原因。
+字段速览:`round` 轮次、`userKey` 当前 IM 用户、`hitCount` 命中数、`memoryIds` 依据记忆 id、`fragments` 原始碎片、`rebuilt` 重建片段、`injection` 注入方式(`replaced` 原位替换了本插件上一版注入 / `appended` 追加在末尾 / `none` 未注入)、`latencyMs` 耗时、`error` 跳过原因。
 
 > 想运行时真·对比(同一轮同时看到原文召回与重建片段),把 `inject.strategy` 设为 `append`;想零成本对比,看日志即可。
 
@@ -293,7 +294,7 @@ This plugin upgrades the **recall/presentation layer**:
 - Opens the existing memory store (`$DSH_HOME/memory/memory.db`) **read-only**, never writes, never touches the capture pipeline;
 - Before every model step, it retrieves memory fragments and asks the LLM to **reconstruct** them into contextual, emotionally-toned recollection snippets (using only in-fragment facts — no fabrication);
 - **Per-user memory isolation for IM (QQ/WeChat…)**: it parses the `<dsh_im_source>` block that IM bridge plugins attach to messages, extracts `senderId`/`chatId`, and keeps each user's memories out of other users' recalls via an ownership index it maintains in its **own** directory (`<DSH_HOME>/recall-rebuild/namespaces`) — the underlying memory DB is still never written. Modes: `auto` (drop memories clearly owned by others; ownerless memories are conservatively visible until claimed), `strict` (only inject memories already owned by the current user), `off` (no filtering). Desktop chats with no detectable user are never filtered;
-- Injects via `agent/pre-step` with `source.kind='plugin:recall-rebuild'`, so it is never re-captured by the underlying memory plugin; `replace` strategy swaps out the other plugin's raw-text recall in place, `append` adds alongside;
+- Injects via `agent/pre-step` with `source.kind='plugin:recall-rebuild'`, so it is never re-captured by the underlying memory plugin; the injection is always **appended at the tail** of the message batch (never prepended, never rewriting the middle of history), so the byte-for-byte prompt prefix of consecutive steps stays intact and prompt caching keeps hitting; `replace` only swaps out this plugin's own previous injection within the same step, `append` always adds;
 - **Never blocks a conversation**: missing store, missing model route, timeout or rebuild failure all silently skip the step;
 - **Observable rebuild quality**: every round appends one JSONL audit line to `~/.dsh/recall-rebuild/logs/recall-YYYY-MM-DD.log` — raw fragments vs rebuilt snippet side by side, injection mode / latency / skip reason, plus a throttled `stats.json` — zero extra injection, zero token cost, so you can judge for yourself whether rebuilding beats raw recall;
 - **Sleep consolidation + associative spreading (long-term memory layer)**: while idle, accumulated fragments are clustered (local 2-gram similarity), LLM-distilled into stable memories (`stable-fact`/`pattern`/`preference`/`relationship`/`mood`), linked in a spreading-activation graph, and low-confidence long-unused entries decay to `dormant` (recall down-weighting, never deleted, never written to the base store) — and that forgetting is **reversible**: a dormant entry wakes up again when later recall fragments are similar enough to it (`consolidate.reviveSimilarity`), when it gets hit, or when you `edit` it, and every hit nudges its confidence up so frequently-used memories climb back out on their own. Consolidated entries are recalled first, get more stable the more they are hit, and strong links make related topics surface too — closer to how the brain consolidates daytime experience overnight. Link weights decay with a 30-day half-life and spreading goes two hops (a strong link's strong link still surfaces, at lower priority). When you change your mind ("I live in Hangzhou" → "I live in Chengdu") the new entry **supersedes** the old one — judged by character-subsequence ratio, so a one-slot change is caught where bag-of-words similarity would dilute it; superseded entries are never injected and never woken, though editing one still overrides that. Seeing the same thing again (nearly verbatim, `consolidate.reinforceThreshold`) does not create a near-duplicate: it raises the existing entry's confidence by 0.1 — more than a recall hit's 0.05, because hearing it from you again beats the retriever matching it again. Confidence is therefore dynamic: creation only sets the starting point. Everything lives under `<DSH_HOME>/recall-rebuild/consolidated/`;

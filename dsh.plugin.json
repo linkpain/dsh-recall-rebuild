@@ -1,7 +1,7 @@
 {
   "id": "dsh-recall-rebuild",
   "name": "dsh-recall-rebuild",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": {
     "en": "Reconstructive recall enhancer for DeepSeek Harness: reads the memory store of existing memory plugins (dsh-prime-memory), and before each model step rebuilds retrieved memory fragments into contextual, emotionally-toned recollection snippets instead of raw-text injection.",
     "zh": "重建式回忆增强插件：只读现有记忆插件（dsh-prime-memory）的记忆库，在模型步骤前把检索到的记忆碎片「重建」为带语境与情绪的回忆片段注入，替代生硬的原文注入。"
