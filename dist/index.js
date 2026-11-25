@@ -17,6 +17,7 @@ import { RebuildLogger } from './observability.js';
 import { ConsolidatedStore } from './consolidated.js';
 import { runConsolidation } from './consolidate.js';
 import { registerRecallRebuildCommands } from './commands.js';
+export { DIFFUSE_OPTS } from './recall.js';
 export const name = 'recall-rebuild';
 export const inject = ['llm', 'commands?'];
 export const Config = recallRebuildSchema;

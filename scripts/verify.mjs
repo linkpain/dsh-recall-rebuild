@@ -371,7 +371,9 @@ cs.upsert({
 check('cons:条目持久化', cs.get('c_1')?.content.includes('冰美式'));
 cs.addLink('c_1', 'c_2', '同轮巩固');
 cs.addLink('c_1', 'c_2', '同轮巩固');
-check('cons:联想边权重累加', cs.strongLinks('c_1', 2, 5).length === 1 && cs.strongLinks('c_1', 2, 5)[0].weight === 2);
+// 必须显式传 now:边权带半衰期衰减,默认 now=Date.now() 时 weight=2 的边只有约 1.9 ms 能过
+// minWeight=2 的门槛,断言会随机器快慢偶发失败(曾导致 CI flake)。
+check('cons:联想边权重累加', cs.strongLinks('c_1', 2, 5, nowMs).length === 1 && cs.strongLinks('c_1', 2, 5, nowMs)[0].weight === 2);
 cs.touch('c_1', nowMs, { confidenceThreshold: 0.4, dormantDays: 30 });
 check('cons:touch 计数', cs.get('c_1')?.touchCount === 1);
 check('cons:touch 抬升置信度(越用越稳)', (cs.get('c_1')?.confidence ?? 0) > 0.6);
@@ -462,8 +464,8 @@ csSup.addLink('old_1', 'c_other', '旧联想');
 check('sup:取代落盘为 superseded', csSup.supersedeMany([['new_1', 'old_1']], nowMs) === 1 &&
   csSup.get('old_1')?.status === 'superseded' && csSup.get('old_1')?.supersededBy === 'new_1');
 check('sup:被取代的条目不再重复取代', csSup.supersedeMany([['new_1', 'old_1']], nowMs) === 0);
-check('sup:联想边迁到新条目', csSup.strongLinks('new_1', 1, 5).some((l) => l.id === 'c_other') &&
-  csSup.strongLinks('old_1', 1, 5).length === 0);
+check('sup:联想边迁到新条目', csSup.strongLinks('new_1', 1, 5, nowMs).some((l) => l.id === 'c_other') &&
+  csSup.strongLinks('old_1', 1, 5, nowMs).length === 0);
 check('sup:被取代后 touch 不再复活', (() => {
   csSup.touch('old_1', nowMs, { confidenceThreshold: 0.4, dormantDays: 30 });
   return csSup.get('old_1')?.status === 'superseded' && csSup.get('old_1')?.touchCount === 0;
@@ -490,6 +492,7 @@ check('sup:唤醒超过上限仍生效但不注入',
 
 // ── 2f-3. 边权衰减 + 两跳扩散 ────────────────────────────────
 const { effectiveWeight, LINK_HALF_LIFE_DAYS } = await import(`${distUrl}consolidated.js`);
+const { DIFFUSE_OPTS } = plugin;
 check('edge:半衰期常量为 30 天', LINK_HALF_LIFE_DAYS === 30);
 check('edge:刚强化的边不衰减',
   effectiveWeight({ weight: 4, label: 'x', at: nowMs }, nowMs) === 4);
@@ -514,7 +517,9 @@ dg.addLink('a', 'b', '同轮巩固', nowMs);
 dg.addLink('b', 'c', '同轮巩固', nowMs);
 dg.addLink('b', 'c', '同轮巩固', nowMs);
 dg.addLink('c', 'd', '同轮巩固', nowMs); // 单次弱边:不该扩散出来
-const dOpts = { hop1Min: 2, hop2Min: 2, minScore: 1, maxHop1: 2, maxHop2: 1 };
+// 用生产同款参数:此前这里手写 { hop1Min: 2, hop2Min: 2 },与 src/recall.ts 各写各的,
+// 两处一旦漂移,评测就成了「测一个生产根本不用的配置」。
+const dOpts = DIFFUSE_OPTS;
 const dgOut = dg.diffuse('a', dOpts, nowMs);
 check('diffuse:一跳带出强共现条目', dgOut.some((x) => x.id === 'b' && x.hop === 1));
 check('diffuse:两跳带出强链的强链', dgOut.some((x) => x.id === 'c' && x.hop === 2));
@@ -530,6 +535,26 @@ check('diffuse:新边在当期仍然生效',
   dg.diffuse('a', dOpts, nowMs).some((x) => x.id === 'd'));
 check('edge:strongLinks 暴露有效权重',
   dg.strongLinks('a', 1, 5, nowMs).every((l) => typeof l.effective === 'number' && l.effective <= l.weight));
+// 回归:生产链路(consolidate.ts:216)只在「本轮新产出」的条目间连边,id 每次巩固都新生成,
+// 同一对 id 不会出现第二次 ⇒ 边权恒为 1。此处必须用单次 addLink 复刻真实数据形态,
+// 否则会像旧断言那样靠手加两次权重把失效掩盖过去。
+const prodDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-prod-'));
+const prod = new ConsolidatedStore(prodDir, logger);
+prod.load();
+for (const id of ['p1', 'p2', 'p3']) {
+  prod.upsert({
+    id, userKey: null, type: 'stable-fact', content: id, sourceIds: [],
+    confidence: 0.6, status: 'active', createdAt: nowMs, updatedAt: nowMs, touchCount: 0,
+  });
+}
+prod.addLinks([['p1', 'p2'], ['p2', 'p3']], '同轮巩固', nowMs); // 生产形态:每对只连一次
+check('diffuse:生产形态(单次连边,weight=1)也能扩散',
+  prod.diffuse('p1', DIFFUSE_OPTS, nowMs).some((x) => x.id === 'p2'));
+check('diffuse:生产形态下两跳可达',
+  prod.diffuse('p1', DIFFUSE_OPTS, nowMs).some((x) => x.id === 'p3' && x.hop === 2));
+check('diffuse:生产形态下 60 天后自然淡出',
+  prod.diffuse('p1', DIFFUSE_OPTS, nowMs + 60 * 86400000).length === 0);
+fs.rmSync(prodDir, { recursive: true, force: true });
 fs.rmSync(dgDir, { recursive: true, force: true });
 // 重启加载(原子落盘后重读)
 const cs2 = new ConsolidatedStore(csDir, logger);

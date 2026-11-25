@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { type RecallRebuildConfig } from './config.js';
+export { DIFFUSE_OPTS } from './recall.js';
 export declare const name = "recall-rebuild";
 export declare const inject: string[];
 export declare const Config: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{

@@ -22,6 +22,22 @@ import { extractUserKey, type NamespaceStore } from './namespace.js';
 import type { RebuildLogger } from './observability.js';
 import { decideInjection, type ConsolidatedStore } from './consolidated.js';
 
+/**
+ * 联想扩散的生产参数(单一事实源:recall 注入与 verify 断言共用,避免两处漂移)。
+ *
+ * hop1Min/hop2Min 取 0.5 而非 1:生产链路(consolidate.ts:216)只在「本轮新产出」的条目间连边,
+ * 而条目 id 每次巩固都新生成,同一对 id 不会出现第二次 —— 边权因此恒为 1、累加分支永不执行。
+ * 门槛若取 >=1,就只有写入那一瞬间能过,衰减一开始就归零,扩散实际从不触发。
+ * 取 0.5 让 weight=1 的边在半个半衰期(30 天)内可见、60 天后自然淡出,与 LINK_HALF_LIFE_DAYS 对齐。
+ */
+export const DIFFUSE_OPTS = {
+  hop1Min: 0.5,
+  hop2Min: 0.5,
+  minScore: 1,
+  maxHop1: 2,
+  maxHop2: 1,
+} as const;
+
 interface MsgLike {
   source?: { kind?: string; plugin?: string; form?: string };
   content?: unknown;
@@ -210,11 +226,7 @@ function mergeConsolidated(
       });
       // 联想扩散:一跳(强共现)最多 2 条,二跳(强链的强链)最多 1 条。
       // 边权带半衰期衰减,陈旧联想不会长期霸占扩散名额。
-      const linked = consolidated.diffuse(
-        m.id,
-        { hop1Min: 2, hop2Min: 2, minScore: 1, maxHop1: 2, maxHop2: 1 },
-        now,
-      );
+      const linked = consolidated.diffuse(m.id, DIFFUSE_OPTS, now);
       for (const l of linked) {
         const lm = consolidated.get(l.id);
         // 联想只带 active:被取代的旧事实不能借「联想」还魂

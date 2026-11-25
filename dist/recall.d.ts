@@ -18,6 +18,21 @@ import type { LoggerLike, MemoryRecord, MemoryStore } from './store.js';
 import { type NamespaceStore } from './namespace.js';
 import type { RebuildLogger } from './observability.js';
 import { type ConsolidatedStore } from './consolidated.js';
+/**
+ * 联想扩散的生产参数(单一事实源:recall 注入与 verify 断言共用,避免两处漂移)。
+ *
+ * hop1Min/hop2Min 取 0.5 而非 1:生产链路(consolidate.ts:216)只在「本轮新产出」的条目间连边,
+ * 而条目 id 每次巩固都新生成,同一对 id 不会出现第二次 —— 边权因此恒为 1、累加分支永不执行。
+ * 门槛若取 >=1,就只有写入那一瞬间能过,衰减一开始就归零,扩散实际从不触发。
+ * 取 0.5 让 weight=1 的边在半个半衰期(30 天)内可见、60 天后自然淡出,与 LINK_HALF_LIFE_DAYS 对齐。
+ */
+export declare const DIFFUSE_OPTS: {
+    readonly hop1Min: 0.5;
+    readonly hop2Min: 0.5;
+    readonly minScore: 1;
+    readonly maxHop1: 2;
+    readonly maxHop2: 1;
+};
 interface MsgLike {
     source?: {
         kind?: string;
