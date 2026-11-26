@@ -209,10 +209,11 @@ if (after.recall < MIN_RECALL) {
   process.exit(1);
 }
 // 通用源单列闸门:它和 prime 走不同打分路径,不能用 prime 的成绩替它担保。
-// 门槛比 prime 低一大截是如实记录差距:通用源只有词覆盖度,没有 FTS/BM25/
-// 单字/语义四条通道,同一批 fixture 上本来就低 22 个点。闸门卡在实测值附近,
-// 只防「把通用源打分改坏」,不假装它和 prime 一样强。
-const MIN_GENERIC = Number(process.env.EVAL_MIN_GENERIC ?? 0.45);
+// 历史上这里比 prime 低 22 个点(47.5%),因为通用源只有「命中词数」一条通道,
+// 2-gram 全落空时彻底失明。补齐单字覆盖 + 字符 n-gram 语义 + RRF 融合 + 语义精排
+// 之后,通用源追平 prime(70.0%/MRR 0.615),闸门随之抬到与 prime 同级 ——
+// 从此任何一侧退化都会被同一个数字看住。
+const MIN_GENERIC = Number(process.env.EVAL_MIN_GENERIC ?? 0.65);
 if (generic.recall < MIN_GENERIC) {
   console.error('');
   console.error('失败:通用源 recall@5 ' + pct(generic.recall) + ' 低于回归闸门 ' + pct(MIN_GENERIC));

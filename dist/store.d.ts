@@ -33,6 +33,16 @@ export interface MemoryStore {
  */
 export declare function tokenizeQuery(query: string): string[];
 /**
+ * 单字覆盖通道的查询特征:CJK 单字(去高频虚字)+ 拉丁词。
+ *
+ * 为什么需要它:2-gram 分词在「查询词与记忆正文没有共同二元组」时彻底失明。
+ * 「我家猫最近掉毛厉害」切出 我家/家猫/猫最/最近/近掉/掉毛/毛厉/厉害,
+ * 而记忆是「用户养了一只叫煤球的黑色英短猫」—— 二元组一个都不重合,却明明
+ * 讲的是同一只猫。退到单字粒度后「猫」立刻接上。单字精度低,故只作补充通道,
+ * 权重低于词元通道(见通用源 W_CHAR)。
+ */
+export declare function queryCharTerms(query: string): string[];
+/**
  * 宽松 MATCH 表达式:词元 OR 连接(召回优先)。
  *
  * 为什么 AND 之外还要一路 OR:中文 2-gram 词元一多,AND 几乎必然 0 命中,

@@ -127,6 +127,42 @@ const CJK_CHAR_STOP = new Set([
     '果', '或', '者', '与', '及', '着', '过', '来', '去', '上', '下', '里', '中',
     '得', '地', '之', '其', '一', '二', '三', '点', '做', '想', '说', '看',
 ]);
+/**
+ * 单字覆盖通道的查询特征:CJK 单字(去高频虚字)+ 拉丁词。
+ *
+ * 为什么需要它:2-gram 分词在「查询词与记忆正文没有共同二元组」时彻底失明。
+ * 「我家猫最近掉毛厉害」切出 我家/家猫/猫最/最近/近掉/掉毛/毛厉/厉害,
+ * 而记忆是「用户养了一只叫煤球的黑色英短猫」—— 二元组一个都不重合,却明明
+ * 讲的是同一只猫。退到单字粒度后「猫」立刻接上。单字精度低,故只作补充通道,
+ * 权重低于词元通道(见通用源 W_CHAR)。
+ */
+export function queryCharTerms(query) {
+    const q = typeof query === 'string' ? query.toLowerCase() : '';
+    if (!q)
+        return [];
+    const out = [];
+    const seen = new Set();
+    const push = (t) => {
+        if (!t || seen.has(t) || out.length >= MAX_CHAR_WORDS)
+            return;
+        seen.add(t);
+        out.push(t);
+    };
+    for (const m of q.matchAll(RUN_RE)) {
+        const run = m[0] ?? '';
+        if (!run)
+            continue;
+        if (CJK_CHAR.test(run)) {
+            for (const c of run)
+                if (!CJK_CHAR_STOP.has(c))
+                    push(c);
+            continue;
+        }
+        if (!LATIN_STOP.has(run))
+            push(run);
+    }
+    return out;
+}
 /** 宽松 MATCH 表达式的词元上限:OR 展开太多会让 FTS 退化成全表扫。 */
 const MAX_RELAXED_TOKENS = 24;
 /**

@@ -1084,6 +1084,57 @@ console.log('[5] 打分长度归一化');
   const hits = st.search('kafka 扩容', 5).map((r) => r.id);
   check('length:短而准的条目排在长流水账前', hits[0] === 'short', JSON.stringify(hits));
 }
+// ── 5b. 通用源多通道召回(单字覆盖 / 语义 / 衰减) ─────────────
+// 背景:通用源旧实现只有「命中词数」一条通道,2-gram 全落空时彻底失明 ——
+// 同一批 fixture 上 recall@5 47.5%,比 prime 低 22 个点。这里锁死补齐后的性质。
+console.log('[5b] 通用源多通道召回');
+{
+  const { makeTextStore } = await import(distUrl + 'sources/kit.js');
+  const { queryCharTerms, buildCharNgramVector, cosineSimilarity } = await import(distUrl + 'store.js');
+  const loggerLike = { info() {}, warn() {}, error() {}, debug() {} };
+
+  // 单字通道的特征抽取:去高频虚字、保留实字与拉丁词
+  const terms = queryCharTerms('我家猫最近掉毛厉害');
+  check('char:抽出实字', terms.includes('猫') && terms.includes('掉') && terms.includes('毛'), JSON.stringify(terms));
+  check('char:滤掉高频虚字', !terms.includes('我') && !terms.includes('的'), JSON.stringify(terms));
+  check('char:空查询返回空', queryCharTerms('').length === 0);
+  check('char:拉丁词保留', queryCharTerms('kafka 扩容').includes('kafka'));
+
+  // 零二元组重叠:查询「我家猫最近掉毛厉害」对「用户养了一只叫煤球的黑色英短猫」
+  const catDocs = [
+    { id: 'cat', text: '用户养了一只叫煤球的黑色英短猫', hints: [], scene: '宠物', family: 'f', type: 'fact', ts: '' },
+    { id: 'net', text: '用户家里还没装宽带', hints: [], scene: '居住', family: 'f', type: 'fact', ts: '' },
+  ];
+  const catStore = makeTextStore('单字通道', catDocs, loggerLike);
+  const catHits = catStore.search('我家猫最近掉毛厉害', 5).map((r) => r.id);
+  check('char:二元组全落空时仍能召回', catHits.includes('cat'), JSON.stringify(catHits));
+
+  // 语义通道:字符 n-gram 余弦能接住「部分字面重合的改写」。
+  // 注意它接不住「对象 / 女朋友」这种**零字符重叠**的同义替换 —— 那是真嵌入模型
+  // 的活,如实写在 README 的局限里。这里只锁它确实做到的那一段。
+  const qv = buildCharNgramVector('我室友白天在家睡觉');
+  const sim = cosineSimilarity(qv, buildCharNgramVector('用户的室友叫小李,是个夜班护士'));
+  check('sem:部分字面重合的改写有非零余弦', sim > 0, String(sim));
+  const semDocs = [
+    { id: 'roommate', text: '用户的室友叫小李,是个夜班护士', hints: [], scene: '室友', family: 'f', type: 'relationship', ts: '' },
+    { id: 'other', text: '用户喜欢听周杰伦的老歌', hints: [], scene: '音乐', family: 'f', type: 'preference', ts: '' },
+  ];
+  const semStore = makeTextStore('语义通道', semDocs, loggerLike);
+  const semHits = semStore.search('我室友白天在家睡觉', 5).map((r) => r.id);
+  check('sem:改写能进候选', semHits.includes('roommate'), JSON.stringify(semHits));
+
+  // 时效衰减必须真的参与:融合名次要还原成 priority,否则乘法恒为 0、衰减被静默跳过
+  const oldDocs = [
+    { id: 'old', text: '部署流程走蓝绿', hints: [], scene: '运维', family: 'f', type: 'note', ts: '2020-01-01' },
+    { id: 'new', text: '部署流程走蓝绿', hints: [], scene: '运维', family: 'f', type: 'note', ts: new Date().toISOString().slice(0, 10) },
+  ];
+  const decayStore = makeTextStore('衰减', oldDocs, loggerLike);
+  const decayHits = decayStore.search('部署流程', 5).map((r) => r.id);
+  check('decay:同内容时新记忆排在前', decayHits[0] === 'new', JSON.stringify(decayHits));
+
+  // 无命中时不返回噪声
+  check('generic:零命中返回空', makeTextStore('空', catDocs, loggerLike).search('zzzzz', 5).length === 0);
+}
 // ── 6. P2:未知源显式标注 / sources 子命令解析 ─────────────────
 console.log('[6] 未知源标注与 sources 子命令');
 {
