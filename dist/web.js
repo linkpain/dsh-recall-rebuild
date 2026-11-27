@@ -19,6 +19,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { effectiveWeight } from './consolidated.js';
+import { buildCharNgramVector, cosineSimilarity } from './store.js';
+import { toEpochMs } from './sources/kit.js';
 /** 路由前缀:页面 /recall-rebuild/sea/,数据 /recall-rebuild/sea/data。 */
 export const SEA_ROUTE_PREFIX = '/recall-rebuild';
 /**
@@ -62,6 +64,68 @@ export function buildSeaGraph(memories, links, opts) {
         }
     }
     return { nodes, links: out };
+}
+/**
+ * 原始记忆 → 渲染器数据(纯函数,verify-sea.mjs 直接断言)。
+ *
+ * 与 buildSeaGraph 的区别是**数据从哪来**:那边读巩固层(memories.json + links.json,
+ * 已经有聚类与联想边),这边直接读记忆库本身(灵枢 / mnemon / prime 的原始条目)。
+ *
+ * 三条规则:
+ * - 原始层没有现成边(灵枢节点的 edges 目前全是 []),连线只能现算:字符 n-gram
+ *   余弦 ≥ linkThreshold 才连,且每个节点只保留最强 topK 条 —— 全连会让画面糊成一团;
+ * - 时间戳原始值可能是秒(灵枢 created_at = 1794884879.42),统一走 toEpochMs;
+ * - 无时间线索的条目(ts 空串)排最前,不因缺时间被丢。
+ */
+export function buildRawSeaGraph(records, opts) {
+    const threshold = opts.linkThreshold ?? 0.12;
+    const topK = opts.topK ?? 3;
+    const sorted = records
+        .map((r) => ({ rec: r, at: toEpochMs(r.timestampStr) }))
+        .sort((a, b) => a.at - b.at);
+    const kept = opts.maxNodes > 0 && sorted.length > opts.maxNodes
+        ? sorted.slice(sorted.length - opts.maxNodes)
+        : sorted;
+    const nodes = kept.map(({ rec, at }) => ({
+        id: rec.id,
+        type: rec.type || 'memory',
+        content: rec.content,
+        createdAt: at,
+        confidence: 0.6,
+        status: 'active',
+    }));
+    const links = [];
+    if (threshold > 0 && nodes.length > 1) {
+        const vecs = kept.map(({ rec }) => buildCharNgramVector(rec.content + ' ' + rec.type));
+        // 每个节点只留最强 topK 条:206 条记忆两两比较约 2.1 万次余弦(几十毫秒),
+        // 但全连会产出上万条边,画面直接糊死。只留最强既省渲染又更像「联想」。
+        const best = nodes.map(() => []);
+        for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+                const sim = cosineSimilarity(vecs[i], vecs[j]);
+                if (!(sim >= threshold))
+                    continue;
+                best[i].push({ j, sim });
+                best[j].push({ j: i, sim });
+            }
+        }
+        const seen = new Set();
+        best.forEach((row, i) => {
+            row.sort((a, b) => b.sim - a.sim);
+            for (const { j, sim } of row.slice(0, topK)) {
+                const key = i < j ? `${i}\u0000${j}` : `${j}\u0000${i}`;
+                if (seen.has(key))
+                    continue;
+                seen.add(key);
+                links.push({
+                    source: nodes[i].id,
+                    target: nodes[j].id,
+                    weight: Math.max(0.15, Math.min(1, sim * 2.5)),
+                });
+            }
+        });
+    }
+    return { nodes, links };
 }
 /* ───────────────────────── 浏览器信任 fence ───────────────────────── */
 function header(headers, name) {
@@ -157,7 +221,7 @@ export function resolveUiFile(rel) {
  * webStartup / webRuntime 是同一个服务的两代名字(alpha.1 之后改名),两个都注入,
  * 谁先就绪用谁 —— 照抄 dsh-mcp-connector 的 reconcile 做法,避免新旧宿主各挂一遍。
  */
-export function mountSeaWeb(ctx, getStore, opts) {
+export function mountSeaWeb(ctx, getStores, opts) {
     if (!opts.enabled)
         return;
     const host = ctx;
@@ -176,7 +240,7 @@ export function mountSeaWeb(ctx, getStore, opts) {
         if (!next)
             return;
         try {
-            dispose = mountRoutes(next.ctx, getStore, next.trustedHosts, opts);
+            dispose = mountRoutes(next.ctx, getStores, next.trustedHosts, opts);
             opts.logger.info(`[recall-rebuild] 记忆识海已挂载: ${SEA_ROUTE_PREFIX}/sea/`);
         }
         catch (err) {
@@ -198,7 +262,7 @@ export function mountSeaWeb(ctx, getStore, opts) {
         });
     }
 }
-function mountRoutes(wctx, getStore, trustedHosts, opts) {
+function mountRoutes(wctx, getStores, trustedHosts, opts) {
     const server = wctx.webServer;
     const fence = (req) => isTrustedWebRequest(req, trustedHosts);
     return server.register({
@@ -217,9 +281,10 @@ function mountRoutes(wctx, getStore, trustedHosts, opts) {
             }
             const url = new URL(req.url ?? '/', 'http://localhost');
             const rel = url.pathname.replace(new RegExp(`^${SEA_ROUTE_PREFIX}`), '') || '/';
-            // 数据端点:/recall-rebuild/sea/data(sea-app.js 的 fetch('./data'))
+            // 数据端点:/recall-rebuild/sea/data(sea-app.js 的 fetch('./data?source=raw'))
             if (rel === '/sea/data' || rel === '/data') {
-                writeJson(res, req.method === 'HEAD', seaPayload(getStore(), opts));
+                const override = url.searchParams.get('source') ?? undefined;
+                writeJson(res, req.method === 'HEAD', seaPayload(getStores(), opts, override));
                 return;
             }
             // 静态资源:只允许 /sea/ 下的文件,其它路径一律 404
@@ -254,19 +319,45 @@ function mountRoutes(wctx, getStore, trustedHosts, opts) {
         },
     });
 }
-/** 组装一次数据响应(读巩固层内存态,不碰磁盘 —— 存储层已 load 过)。 */
-function seaPayload(store, opts) {
-    const meta = store.metaInfo();
+/**
+ * 组装一次数据响应。
+ *
+ * 两路数据源(用户可以在面板上切):
+ * - consolidated:巩固层内存态(不碰磁盘,存储层已 load 过),有聚类与现成联想边;
+ * - raw:直接投影记忆库本身 —— 这条路径**不经过巩固层**,所以即使一轮巩固都没跑过,
+ *   识海也能立刻看见本地已有的全部记忆。
+ *
+ * ?source=raw|consolidated 可临时覆盖默认值(面板切换按钮用它),非法值忽略。
+ */
+function seaPayload(stores, opts, override) {
+    const meta = stores.consolidated.metaInfo();
+    const source = override === 'raw' || override === 'consolidated' ? override : opts.source;
+    if (source === 'raw') {
+        const store = stores.memory;
+        try {
+            const rows = typeof store.list === 'function' ? store.list(opts.maxNodes > 0 ? opts.maxNodes : undefined) : [];
+            const graph = buildRawSeaGraph(rows, {
+                now: Date.now(),
+                maxNodes: opts.maxNodes,
+                linkThreshold: opts.rawLinkThreshold,
+            });
+            return { ...graph, meta: { ...meta, source: 'raw', storeLabel: store.label } };
+        }
+        catch (err) {
+            opts.logger.warn(`[recall-rebuild] 识海原始层组装失败: ${err instanceof Error ? err.message : String(err)}`);
+            return { nodes: [], links: [], meta: { ...meta, source: 'raw', storeLabel: store.label } };
+        }
+    }
     try {
-        const graph = buildSeaGraph(store.list(), store.linkGraph(), {
+        const graph = buildSeaGraph(stores.consolidated.list(), stores.consolidated.linkGraph(), {
             now: Date.now(),
             maxNodes: opts.maxNodes,
         });
-        return { ...graph, meta };
+        return { ...graph, meta: { ...meta, source: 'consolidated', storeLabel: stores.memory.label } };
     }
     catch (err) {
         opts.logger.warn(`[recall-rebuild] 识海数据组装失败: ${err instanceof Error ? err.message : String(err)}`);
-        return { nodes: [], links: [], meta };
+        return { nodes: [], links: [], meta: { ...meta, source: 'consolidated', storeLabel: stores.memory.label } };
     }
 }
 function writeJson(res, head, value) {

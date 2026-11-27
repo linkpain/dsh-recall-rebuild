@@ -139,9 +139,11 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
 
   // 记忆识海可视化(可选):把巩固层投影成星云图挂在 Web GUI 里。
   // webServer 不存在时(纯对话部署)什么都不做,不影响插件主体。
-  mountSeaWeb(ctx, () => consolidated, {
+  mountSeaWeb(ctx, () => ({ consolidated, memory: store }), {
     enabled: config.sea.enabled,
     maxNodes: config.sea.maxNodes,
+    source: config.sea.source,
+    rawLinkThreshold: config.sea.rawLinkThreshold,
     logger,
   });
 

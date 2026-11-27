@@ -14,6 +14,12 @@
   .title { top: 20px; left: 24px; }
   .title h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.14em; color: #e6f1ff; }
   .title p { margin: 6px 0 0; font-size: 11.5px; color: #6f86a6; letter-spacing: 0.04em; }
+  .switch { top: 20px; left: 50%; transform: translateX(-50%); pointer-events: auto;
+    display: flex; gap: 0; border: 1px solid rgba(120,160,210,0.22); border-radius: 7px; overflow: hidden; }
+  .switch button { background: rgba(14,22,38,0.72); border: 0; color: #7d93b3; font-size: 11px;
+    padding: 6px 12px; cursor: pointer; letter-spacing: 0.04em; transition: color .16s, background .16s; }
+  .switch button:hover { color: #cfe0f5; }
+  .switch button.on { background: rgba(90,140,200,0.28); color: #eaf3ff; }
   .search { top: 18px; right: 24px; pointer-events: auto; }
   .search input { width: 190px; padding: 7px 11px; font-size: 12px; color: #dceaff;
     background: rgba(14,22,38,0.72); border: 1px solid rgba(120,160,210,0.22);
@@ -47,6 +53,10 @@
 <body>
 <canvas id="sea"></canvas>
 <div class="hud title"><h1>记忆识海</h1><p id="sub">正在读取…</p></div>
+<div class="hud switch" id="switch">
+  <button type="button" data-source="consolidated">巩固记忆</button>
+  <button type="button" data-source="raw">原始记忆</button>
+</div>
 <div class="hud search"><input id="q" type="search" placeholder="搜索记忆…" autocomplete="off" /></div>
 <div class="hud legend" id="legend"></div>
 <div class="hud timeline">
@@ -57,7 +67,7 @@
   </div>
 </div>
 <div class="card" id="card"></div>
-<div class="empty" id="empty" hidden><b>还没有巩固记忆</b>聊天内容会先成为碎片,<br />夜间巩固后才会在这里点亮。</div>
+<div class="empty" id="empty" hidden><b id="emptyTitle">还没有巩固记忆</b><span id="emptyBody">聊天内容会先成为碎片,<br />夜间巩固后才会在这里点亮。</span></div>
 <script type="module" src="./sea-app.js"></script>
 </body>
 </html>

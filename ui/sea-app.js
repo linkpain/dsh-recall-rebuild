@@ -15,6 +15,19 @@ const qEl = document.getElementById('q');
 const timeEl = document.getElementById('time');
 const timeLabelEl = document.getElementById('timeLabel');
 const playEl = document.getElementById('play');
+const switchEl = document.getElementById('switch');
+const emptyTitleEl = document.getElementById('emptyTitle');
+const emptyBodyEl = document.getElementById('emptyBody');
+
+/** 空态文案随数据源变:两路「空」的原因完全不同,不能共用一句话。 */
+const EMPTY_TEXT = {
+  consolidated: ['还没有巩固记忆', '聊天内容会先成为碎片,<br />夜间巩固后才会在这里点亮。'],
+  raw: ['没有读到记忆条目', '没有检测到可读的记忆库。<br />装一个记忆插件(灵枢 / mnemon / prime)后这里会自动点亮。'],
+};
+
+// 首屏不指定 source,由服务端默认值决定(配置里改默认,面板自动跟随);
+// 用户点了切换按钮之后才显式带上 ?source=。
+let source = null;
 
 const view = new SeaView(canvas, {
   onHover: (node, cx, cy) => showCard(node, cx, cy),
@@ -93,10 +106,17 @@ function applyTime(cutoff) {
   emptyEl.hidden = nodes.length > 0;
 }
 
+function paintSwitch() {
+  for (const btn of switchEl.querySelectorAll('button')) {
+    btn.classList.toggle('on', btn.dataset.source === source);
+  }
+}
+
 async function load() {
   let data;
   try {
-    const res = await fetch('./data', { headers: { accept: 'application/json' } });
+    const url = source === null ? './data' : `./data?source=${encodeURIComponent(source)}`;
+    const res = await fetch(url, { headers: { accept: 'application/json' } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();
   } catch (err) {
@@ -104,6 +124,15 @@ async function load() {
     emptyEl.hidden = false;
     return;
   }
+  // 服务端可能回落到默认源(非法参数),以响应里的 meta.source 为准
+  if (data.meta?.source) source = data.meta.source;
+  paintSwitch();
+  const [title, body] = EMPTY_TEXT[source] ?? EMPTY_TEXT.consolidated;
+  emptyTitleEl.textContent = title;
+  emptyBodyEl.innerHTML = body;
+  stopPlay();
+  timeEl.value = '1000';
+  timeLabelEl.textContent = '全部';
   allNodes = (data.nodes ?? []).slice().sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
   allLinks = data.links ?? [];
   const times = allNodes.map((n) => n.createdAt ?? 0).filter((t) => t > 0);
@@ -113,6 +142,17 @@ async function load() {
   applyTime(0);
   view.start();
 }
+
+switchEl.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn || btn.dataset.source === source) return;
+  source = btn.dataset.source;
+  paintSwitch();
+  subEl.textContent = '正在读取…';
+  view.setQuery('');
+  qEl.value = '';
+  load();
+});
 
 qEl.addEventListener('input', () => view.setQuery(qEl.value));
 

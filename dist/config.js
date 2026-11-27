@@ -71,5 +71,9 @@ export const recallRebuildSchema = Schema.object({
     sea: Schema.object({
         enabled: Schema.boolean().default(true),
         maxNodes: Schema.number().min(50).max(3000).default(1200),
+        // 默认看原始记忆:巩固层要等一轮「睡眠巩固」跑过才有产物,新装用户打开就是空图;
+        // 原始层库里有什么就画什么,开箱即见。想只看聚类后的稳定记忆,面板上点一下即可。
+        source: Schema.union(['consolidated', 'raw']).default('raw'),
+        rawLinkThreshold: Schema.number().min(0).max(0.9).default(0.12),
     }).default({}),
 }).default({});

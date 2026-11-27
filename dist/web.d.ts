@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { ConsolidatedMemory, ConsolidatedStore, LinkGraph } from './consolidated.js';
-import type { LoggerLike } from './store.js';
+import type { LoggerLike, MemoryRecord, MemoryStore } from './store.js';
 /** 路由前缀:页面 /recall-rebuild/sea/,数据 /recall-rebuild/sea/data。 */
 export declare const SEA_ROUTE_PREFIX = "/recall-rebuild";
 /** 识海节点(渲染器契约,与 ui/sea-app.js 的字段一一对应)。 */
@@ -38,6 +38,24 @@ export declare function buildSeaGraph(memories: ConsolidatedMemory[], links: Lin
     maxNodes: number;
 }): SeaGraph;
 /**
+ * 原始记忆 → 渲染器数据(纯函数,verify-sea.mjs 直接断言)。
+ *
+ * 与 buildSeaGraph 的区别是**数据从哪来**:那边读巩固层(memories.json + links.json,
+ * 已经有聚类与联想边),这边直接读记忆库本身(灵枢 / mnemon / prime 的原始条目)。
+ *
+ * 三条规则:
+ * - 原始层没有现成边(灵枢节点的 edges 目前全是 []),连线只能现算:字符 n-gram
+ *   余弦 ≥ linkThreshold 才连,且每个节点只保留最强 topK 条 —— 全连会让画面糊成一团;
+ * - 时间戳原始值可能是秒(灵枢 created_at = 1794884879.42),统一走 toEpochMs;
+ * - 无时间线索的条目(ts 空串)排最前,不因缺时间被丢。
+ */
+export declare function buildRawSeaGraph(records: MemoryRecord[], opts: {
+    now: number;
+    maxNodes: number;
+    linkThreshold?: number;
+    topK?: number;
+}): SeaGraph;
+/**
  * 请求是否来自可信浏览器上下文。
  * 与 dsh-mcp-connector/lib/web.js:116 同一套规则(不共享代码:那是别的插件的私有实现)。
  */
@@ -57,6 +75,10 @@ export declare function resolveUiFile(rel: string): {
 export interface SeaWebOptions {
     enabled: boolean;
     maxNodes: number;
+    /** 默认数据源:'consolidated'(巩固层) | 'raw'(记忆库原始条目)。 */
+    source: 'consolidated' | 'raw';
+    /** 原始层连边阈值(字符 n-gram 余弦);越小线越密。 */
+    rawLinkThreshold: number;
     logger: LoggerLike;
 }
 /**
@@ -66,4 +88,7 @@ export interface SeaWebOptions {
  * webStartup / webRuntime 是同一个服务的两代名字(alpha.1 之后改名),两个都注入,
  * 谁先就绪用谁 —— 照抄 dsh-mcp-connector 的 reconcile 做法,避免新旧宿主各挂一遍。
  */
-export declare function mountSeaWeb(ctx: Context, getStore: () => ConsolidatedStore, opts: SeaWebOptions): void;
+export declare function mountSeaWeb(ctx: Context, getStores: () => {
+    consolidated: ConsolidatedStore;
+    memory: MemoryStore;
+}, opts: SeaWebOptions): void;

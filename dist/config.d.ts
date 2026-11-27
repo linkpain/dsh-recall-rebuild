@@ -81,6 +81,14 @@ export interface SeaOptions {
     enabled: boolean;
     /** 单次投影最多画多少个节点;超出时丢最老的(识海要看得见最近在想什么)。 */
     maxNodes: number;
+    /**
+     * 默认数据源。consolidated = 巩固层产物(聚类后的稳定记忆,默认);
+     * raw = 记忆库原始条目(不过巩固层,库里有什么就画什么)。
+     * 面板上仍可随时切换,这里只决定首次打开看哪一路。
+     */
+    source: 'consolidated' | 'raw';
+    /** 原始层的连边阈值(字符 n-gram 余弦);调低线更密,调高更疏。 */
+    rawLinkThreshold: number;
 }
 /** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
 export interface CommandsOptions {
@@ -294,9 +302,13 @@ export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
     sea: Schema<Schemastery.ObjectS<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
         maxNodes: Schema<number, number, "defined">;
+        source: Schema<"consolidated" | "raw", "consolidated" | "raw", "defined">;
+        rawLinkThreshold: Schema<number, number, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
         maxNodes: Schema<number, number, "defined">;
+        source: Schema<"consolidated" | "raw", "consolidated" | "raw", "defined">;
+        rawLinkThreshold: Schema<number, number, "defined">;
     }>>, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     enabled: Schema<boolean, boolean, "defined">;
@@ -407,8 +419,12 @@ export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
     sea: Schema<Schemastery.ObjectS<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
         maxNodes: Schema<number, number, "defined">;
+        source: Schema<"consolidated" | "raw", "consolidated" | "raw", "defined">;
+        rawLinkThreshold: Schema<number, number, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
         maxNodes: Schema<number, number, "defined">;
+        source: Schema<"consolidated" | "raw", "consolidated" | "raw", "defined">;
+        rawLinkThreshold: Schema<number, number, "defined">;
     }>>, "defined">;
 }>>, "defined">;

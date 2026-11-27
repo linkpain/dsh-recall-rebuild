@@ -87,6 +87,14 @@ export interface SeaOptions {
   enabled: boolean;
   /** 单次投影最多画多少个节点;超出时丢最老的(识海要看得见最近在想什么)。 */
   maxNodes: number;
+  /**
+   * 默认数据源。consolidated = 巩固层产物(聚类后的稳定记忆,默认);
+   * raw = 记忆库原始条目(不过巩固层,库里有什么就画什么)。
+   * 面板上仍可随时切换,这里只决定首次打开看哪一路。
+   */
+  source: 'consolidated' | 'raw';
+  /** 原始层的连边阈值(字符 n-gram 余弦);调低线更密,调高更疏。 */
+  rawLinkThreshold: number;
 }
 
 /** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
@@ -260,5 +268,9 @@ export const recallRebuildSchema = Schema.object({
   sea: Schema.object({
     enabled: Schema.boolean().default(true),
     maxNodes: Schema.number().min(50).max(3000).default(1200),
+    // 默认看原始记忆:巩固层要等一轮「睡眠巩固」跑过才有产物,新装用户打开就是空图;
+    // 原始层库里有什么就画什么,开箱即见。想只看聚类后的稳定记忆,面板上点一下即可。
+    source: Schema.union(['consolidated', 'raw']).default('raw'),
+    rawLinkThreshold: Schema.number().min(0).max(0.9).default(0.12),
   }).default({}),
 }).default({});

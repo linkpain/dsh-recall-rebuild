@@ -36,6 +36,15 @@ export interface MemoryStore {
   ok: boolean;
   label: string;
   search(query: string, limit: number): MemoryRecord[];
+  /**
+   * 枚举库里的条目(识海「原始记忆」视图用)。
+   *
+   * 为什么必须单独一个原语:search 要求一个 query,而「把库里所有点摆出来」没有
+   * query 可给。可选:能整库枚举的源才实现它,没有就返回 undefined,调用方按
+   * 「该源不支持投影」降级 —— 而不是拿空 query 硬调 search 拿到一堆噪声。
+   * 只读,不改任何状态。
+   */
+  list?(limit?: number): MemoryRecord[];
   close(): void;
 }
 
@@ -659,6 +668,22 @@ export function openPrimeMemoryStore(dataDir: string, logger: LoggerLike): Memor
       const fused = fuseRanked(lists, Math.max(limit * 4, 40), weights);
       return rerankBySemantic(fused, query).slice(0, Math.max(0, limit));
     },
+    /** 整库枚举(识海原始记忆视图):按 priority / 时间取最新的一批,不打分。 */
+    list(limit?: number): MemoryRecord[] {
+      if (!db) return [];
+      const cap = typeof limit === 'number' && limit > 0 ? limit : 2000;
+      try {
+        const rows = db.prepare(
+          `SELECT record_id, content, type, scene_name, family, priority, timestamp_str
+           FROM l1_records
+           ORDER BY priority DESC, timestamp_str DESC
+           LIMIT ?`,
+        ).all(cap);
+        return rows.map(mapRow);
+      } catch {
+        return [];
+      }
+    },
     close(): void {
       try { db?.close(); } catch { /* 忽略 */ }
       db = null;
@@ -798,6 +823,19 @@ export function openPalaceStore(cwd: string, logger: LoggerLike): MemoryStore {
         }));
       return rankMemories(ranked, limit, Date.now());
     },
+    /** 整库枚举(识海原始记忆视图):新条目在前,不打分。 */
+    list(limit?: number): MemoryRecord[] {
+      const cap = typeof limit === 'number' && limit > 0 ? limit : entries.length;
+      return entries.slice(0, cap).map((e) => ({
+        id: `${e.rel}#L${e.lineNo}`,
+        content: e.content,
+        type: 'palace',
+        sceneName: e.section,
+        family: e.rel,
+        priority: 0,
+        timestampStr: e.ts,
+      }));
+    },
     close(): void {
       /* 无资源 */
     },
@@ -935,6 +973,23 @@ export function openDshMemoryStore(cwd: string, logger: LoggerLike): MemoryStore
         timestampStr: epochToDate(e.updatedAt),
       }));
       return rankMemories(ranked, limit, Date.now());
+    },
+    /** 整库枚举(识海原始记忆视图):按更新时间新→旧,不打分。 */
+    list(limit?: number): MemoryRecord[] {
+      const cap = typeof limit === 'number' && limit > 0 ? limit : entries.length;
+      return entries
+        .slice()
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, cap)
+        .map((e) => ({
+          id: `${e.rel}#${e.id}`,
+          content: e.content,
+          type: 'dsh-memory',
+          sceneName: e.namespace === 'project' ? 'project 记忆' : 'global 记忆',
+          family: e.rel,
+          priority: 0,
+          timestampStr: epochToDate(e.updatedAt),
+        }));
     },
     close(): void {
       /* 无资源 */

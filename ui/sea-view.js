@@ -11,11 +11,19 @@ import {
 
 /** 各类型记忆的点色(刻意压得很淡,整体仍是冷白,只在悬停时略微显色)。 */
 const TYPE_COLOR = {
+  // 巩固层五类
   'stable-fact': [214, 232, 255],
   pattern: [186, 214, 255],
   preference: [255, 226, 190],
   relationship: [212, 200, 255],
   mood: [186, 240, 226],
+  // 原始层:按记忆库来源着色(宿主的 MemoryRecord.type 就是来源族名)
+  lingshu: [196, 224, 255],
+  mnemon: [206, 214, 255],
+  prime: [186, 236, 224],
+  palace: [255, 222, 196],
+  'dsh-memory': [216, 208, 255],
+  memory: [214, 232, 255],
 };
 
 const TYPE_LABEL = {
@@ -24,6 +32,12 @@ const TYPE_LABEL = {
   preference: '偏好',
   relationship: '关系',
   mood: '情绪',
+  lingshu: '灵枢',
+  mnemon: 'mnemon',
+  prime: 'prime',
+  palace: '记忆宫殿',
+  'dsh-memory': 'dsh-memory',
+  memory: '记忆',
 };
 
 /** 生成辉光贴图(只做一次)。 */

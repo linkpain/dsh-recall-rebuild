@@ -77,8 +77,21 @@ const fakeCtx = {
   webServer: { register: (route) => { handler = route.handler; return () => {}; } },
   effect: (fn) => fn(),
 };
-web.mountSeaWeb({ inject: (deps, cb) => cb({ ...fakeCtx, webStartup: { trustedHosts: [] } }) }, () => store, {
-  enabled: true, maxNodes: 0, logger: { debug() {}, info() {}, warn() {} },
+const rawStore = {
+  ok: true,
+  label: 'raw-test',
+  search: () => [],
+  list: () => [
+    { id: 'r1', content: '今天在写记忆识海的渲染器', type: 'lingshu', sceneName: 'contextual', family: 'f1', priority: 0, timestampStr: '2026-11-20' },
+    { id: 'r2', content: '今天在写记忆识海的渲染循环', type: 'lingshu', sceneName: 'contextual', family: 'f2', priority: 0, timestampStr: '2026-11-21' },
+    { id: 'r3', content: '完全不相干的一条:周末去买菜', type: 'lingshu', sceneName: 'contextual', family: 'f3', priority: 0, timestampStr: '2026-11-22' },
+  ],
+  close: () => {},
+};
+const stores = () => ({ consolidated: store, memory: rawStore });
+web.mountSeaWeb({ inject: (deps, cb) => cb({ ...fakeCtx, webStartup: { trustedHosts: [] } }) }, stores, {
+  enabled: true, maxNodes: 0, source: 'consolidated', rawLinkThreshold: 0.12,
+  logger: { debug() {}, info() {}, warn() {} },
 });
 check('mountSeaWeb 注册了 handler', typeof handler === 'function');
 
@@ -105,6 +118,21 @@ check('数据端点 200', data.status === 200);
 check('数据端点 no-store', data.body.length > 0 && parsed.nodes.length === 3, JSON.stringify(parsed).slice(0, 120));
 check('数据含 meta', parsed.meta.runCount === 3);
 check('数据不含内部字段', parsed.nodes[0].userKey === undefined && parsed.nodes[0].sourceIds === undefined);
+check('默认源是巩固层', parsed.meta.source === 'consolidated', String(parsed.meta.source));
+const rawData = await get('/recall-rebuild/sea/data?source=raw');
+const rawParsed = JSON.parse(rawData.body);
+check('?source=raw 走原始层', rawData.status === 200 && rawParsed.meta.source === 'raw', rawData.status + ' ' + rawParsed.meta?.source);
+check('原始层节点数 = 库条目数', rawParsed.nodes.length === 3, String(rawParsed.nodes.length));
+check('原始层无自环', rawParsed.links.every((l) => l.source !== l.target));
+check('原始层相似条目连了线', rawParsed.links.some(
+  (l) => [l.source, l.target].includes('r1') && [l.source, l.target].includes('r2')), JSON.stringify(rawParsed.links));
+check('原始层不相干条目不连', !rawParsed.links.some(
+  (l) => [l.source, l.target].includes('r3')), JSON.stringify(rawParsed.links));
+check('原始层边权落在 0.15–1', rawParsed.links.every((l) => l.weight >= 0.15 && l.weight <= 1));
+check('原始层时间转成毫秒', rawParsed.nodes.every((n) => n.createdAt > 1e11), JSON.stringify(rawParsed.nodes.map((n) => n.createdAt)));
+const badSource = await get('/recall-rebuild/sea/data?source=nonsense');
+check('非法 source 回落到默认源', JSON.parse(badSource.body).meta.source === 'consolidated');
+
 const forbidden = await get('/recall-rebuild/sea/', { 'sec-fetch-site': 'cross-site' });
 check('跨站被 fence 挡住', forbidden.status === 403, `${forbidden.status}`);
 const missing = await get('/recall-rebuild/sea/nope.js');

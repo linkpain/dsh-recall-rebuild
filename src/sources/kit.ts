@@ -178,6 +178,17 @@ export function makeTextStore(
       // 就不再预建,该批条目只走词元与单字通道(有损,但不至于把内存吃穿)。
       vec: i < VEC_MAX_DOCS ? buildCharNgramVector(d.text + ' ' + d.hints.join(' ')) : new Map(),
     }));
+  // 检索与枚举两条路都要把 Doc 映射成 MemoryRecord,提到外面共用一份
+  // (list() 在 search 作用域外,原先写在 search 里的映射够不着)。
+  const toRec = (p: { doc: Doc }): MemoryRecord => ({
+    id: p.doc.id,
+    content: p.doc.text,
+    type: p.doc.type,
+    sceneName: p.doc.scene,
+    family: p.doc.family,
+    priority: 0,
+    timestampStr: p.doc.ts,
+  });
   let prepared = prepare(docs);
   let loadedAt = Date.now();
   const refreshMs = opts.refreshMs ?? 0;
@@ -197,15 +208,6 @@ export function makeTextStore(
       }
       const words = tokenizeQuery(query);
       if (words.length === 0) return [];
-      const toRec = (p: { doc: Doc }): MemoryRecord => ({
-        id: p.doc.id,
-        content: p.doc.text,
-        type: p.doc.type,
-        sceneName: p.doc.scene,
-        family: p.doc.family,
-        priority: 0,
-        timestampStr: p.doc.ts,
-      });
       // 四路候选,末了 RRF 融合 —— 与 prime 适配器同一套方法论。
       // 旧实现只有「命中词数」一条路:二元组一个都不重合时全空,而多命中一个
       // 泛用二元组的流水账反倒压过直击要害的那条。分通道后各管一段:
@@ -292,6 +294,17 @@ export function makeTextStore(
       }));
       return rankMemories(ranked, limit, Date.now());
     },
+    /**
+     * 整库枚举(识海原始记忆视图)。prepared 已经是解析好的快照,这里只做映射,
+     * 不打分不排序 —— 投影要的是「有哪些点」,不是「哪些最相关」。
+     * 时间取 doc.ts(YYYY-MM-DD),与检索路径同一口径,渲染器那边再转毫秒。
+     */
+    list(limit?: number): MemoryRecord[] {
+      const take = typeof limit === 'number' && limit > 0 ? Math.min(limit, prepared.length) : prepared.length;
+      const out: MemoryRecord[] = [];
+      for (let i = 0; i < take; i++) out.push(toRec(prepared[i] as { doc: Doc }));
+      return out;
+    },
     close(): void {
       /* 纯内存,无资源 */
     },
@@ -316,6 +329,9 @@ export function combineStores(label: string, stores: MemoryStore[], logger: Logg
       ok: true,
       label: only.label,
       search: (q, n) => only.search(q, n),
+      // 单源也必须显式转发 list:这里返回的是**新对象**,不转发等于把源的能力吃掉,
+      // 识海会以为「这个源不支持枚举」而退化成空图(v0.1.19 踩过)。
+      ...(typeof only.list === 'function' ? { list: (n?: number) => (only.list as (l?: number) => MemoryRecord[])(n) } : {}),
       close: () => only.close(),
     };
   }
@@ -345,6 +361,32 @@ export function combineStores(label: string, stores: MemoryStore[], logger: Logg
       }
       if (out.length === 0) {
         logger.debug?.('[recall-rebuild] 多源融合无命中: ' + query);
+      }
+      return out;
+    },
+    /**
+     * 多源枚举:逐个源取,按正文归一化去重(同一句话常被两个插件各存一份),
+     * 再按 limit 截断。单个源抛错只跳过它,不影响其它源。
+     */
+    list(limit?: number): MemoryRecord[] {
+      const out: MemoryRecord[] = [];
+      const seen = new Set<string>();
+      const cap = typeof limit === 'number' && limit > 0 ? limit : Number.POSITIVE_INFINITY;
+      for (const s of live) {
+        if (typeof s.list !== 'function') continue;
+        let rows: MemoryRecord[] = [];
+        try {
+          rows = s.list(cap === Number.POSITIVE_INFINITY ? undefined : cap);
+        } catch {
+          continue;
+        }
+        for (const rec of rows) {
+          const key = normText(rec.content).slice(0, 120);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(rec);
+          if (out.length >= cap) return out;
+        }
       }
       return out;
     },

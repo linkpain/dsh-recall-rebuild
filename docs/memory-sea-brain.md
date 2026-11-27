@@ -408,8 +408,10 @@ webServer 路由对**同一台机器上的任何网页**都可见。没有 fence
 
 ```yaml
 sea:
-  enabled: true    # false = 完全不挂路由(纯对话部署本就不需要)
-  maxNodes: 1200   # 900 以内 Canvas 2D 稳定 60fps;超过不是画不动,而是一屏全是点没信息量
+  enabled: true       # false = 完全不挂路由(纯对话部署本就不需要)
+  maxNodes: 1200      # 900 以内 Canvas 2D 稳定 60fps;超过不是画不动,而是一屏全是点没信息量
+  source: raw         # 面板默认数据源:raw(底层记忆库) | consolidated(巩固层产物)
+  rawLinkThreshold: 0.12   # 原始层连边阈值(字符 n-gram 余弦);越低线越密
 ```
 
 ### 验证
@@ -417,6 +419,53 @@ sea:
 - 纯函数 + 真实 HTTP 往返:`node scripts/verify-sea.mjs`(53 项断言全过:投影规则、九条信任 fence、越界路径拒绝、真实 HTTP 往返、客户端 bundle 形状与槽位注册顺序、包清单);
 - 视觉:开发期用 `python -m http.server` 起 `ui/`,打开 `dev-harness.html?n=420` 生成假数据;联调期用 `scripts/serve-sea-demo.mjs <port> <n>` 起一个带真实形状的 demo 服务;
 - 四档密度(0 / 80 / 450 / 900)截图见 `.refs/`,零记忆时是极淡虚线轮廓 + 空态提示,900 条时皮层带致密、内部通透。
+
+## 十四、双数据源:原始记忆与巩固记忆(v0.1.19)
+
+上线后第一个真机反馈是**「面板打开了,但是空的」**。这不是 bug,是设计后果:识海当时只画巩固层,而巩固层要等「pending 碎片累积到 20 条 + 距上次巩固超 6 小时」才会跑第一轮。新装用户库里明明有几百条记忆,面板却一定是空的——**这层门槛挡在了第一次体验之前**。
+
+修法不是降低门槛(那会让 LLM 抽象在数据不够时硬凑),而是把「看什么」和「巩固了什么」解耦:同一个面板,两路数据源。
+
+### 唯一的技术障碍:`MemoryStore` 只能检索,不能枚举
+
+`src/store.ts` 的 `MemoryStore` 原本只有 `search(query, limit)`。要「把库里所有点摆出来」就得给一个 query,而这里根本没有 query——拿空串硬调 `search` 只会得到一堆按奇怪规则排出来的噪声。
+
+于是补一个**可选**原语:
+
+```ts
+export interface MemoryStore {
+  ok: boolean;
+  label: string;
+  search(query: string, limit: number): MemoryRecord[];
+  list?(limit?: number): MemoryRecord[];   // 枚举;不支持的源留空,调用方降级
+  close(): void;
+}
+```
+
+四个实现:prime(SQL `ORDER BY priority DESC, timestamp_str DESC`)、palace(内存数组切片)、dsh-memory(按 `updatedAt` 新→旧)、通用文本源(`makeTextStore` 里用已经建好的 `prepared` 快照直接映射)。写成可选而不是必选,是因为**枚举能力取决于底层存储形态**,不该逼所有适配器假装支持。
+
+### 一个容易吃掉能力的坑:`combineStores` 单源分支
+
+`combineStores` 在只有一个可用源时返回的是一个**新对象**(只转发 `search`/`close`)。加了 `list` 之后如果忘了在这里转发,表现是:多源配置下原始层正常,单源配置下原始层永远空——因为外面拿到的新对象根本没有 `list` 这个属性。这种「包装层丢方法」的 bug 不会报错,只会静默降级,所以单源分支现在显式展开:
+
+```ts
+...(typeof only.list === 'function' ? { list: (n) => only.list(n) } : {}),
+```
+
+### 原始层的边只能现算
+
+灵枢节点目前 `edges` 全是 `[]`——原始层没有任何现成的联想边。所以 `buildRawSeaGraph` 用与检索同源的字符 n-gram 余弦自己算:
+
+- 阈值 `sea.rawLinkThreshold`(默认 0.12),低于它的两条不连;
+- **每个节点只保留最强的 topK(默认 3)条**——206 条记忆两两比较约 2.1 万次余弦(几十毫秒,可以接受),但全连会产出上万条边,画面直接糊成一团,反而看不见结构;
+- 边权压到 `0.15–1`(`sim * 2.5`),与巩固层的视觉量纲对齐;
+- 时间戳统一走 `toEpochMs`(灵枢的 `created_at` 是**秒**,如 `1794884879.42`;`> 1e11` 才当毫秒)。
+
+两层的观感差异正是巩固层存在的理由:**原始层是「密度高但语义重复」的毛球**(同一件事说过五遍就是五个点),巩固层把重复收敛成一条骨架。先看毛球再看骨架,蒸馏做了什么一目了然。
+
+### 默认值的选择
+
+`sea.source` 默认 **`raw`**。理由是第一次打开必须**有东西看**:巩固层在冷启动时必然是空的,而空面板会被当成「插件坏了」。想只看稳定记忆的用户在面板右上角点一下即可,选择会保持到下次打开。
 
 
 
