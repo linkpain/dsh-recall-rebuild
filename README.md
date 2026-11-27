@@ -229,6 +229,10 @@ flowchart LR
 
 记忆不只是数据,它也可以**被看见**。装好后侧边栏会多一个「记忆识海」面板,把记忆投影成一片深空里的点云。
 
+![记忆识海：把记忆画成一片深空点云](https://raw.githubusercontent.com/linkpain/dsh-recall-rebuild/main/docs/images/memory-sea.png)
+
+> 真机截图：301 条记忆、698 条联想，左下角是各记忆源的条数分布，右上角可切「巩固记忆 / 原始记忆」，底部时间轴能回放这颗大脑是怎么长出来的。
+
 **两个数据源,右上角一键切**:
 
 - **原始记忆**(默认):直接读底层记忆库(灵枢 / mnemon / prime / palace / dsh-memory 都支持),库里有什么就画什么——**装完打开就有东西看**,不需要先跑一轮巩固。原始层没有现成的边,连线按两条记忆的字符 n-gram 余弦相似度现算(每点只留最强的 3 条,阈值 `sea.rawLinkThreshold`);
@@ -372,6 +376,9 @@ This plugin upgrades the **recall/presentation layer**:
 - **Sleep consolidation + associative spreading (long-term memory layer)**: while idle, accumulated fragments are clustered (local 2-gram similarity), LLM-distilled into stable memories (`stable-fact`/`pattern`/`preference`/`relationship`/`mood`), linked in a spreading-activation graph, and low-confidence long-unused entries decay to `dormant` (recall down-weighting, never deleted, never written to the base store) — and that forgetting is **reversible**: a dormant entry wakes up again when later recall fragments are similar enough to it (`consolidate.reviveSimilarity`), when it gets hit, or when you `edit` it, and every hit nudges its confidence up so frequently-used memories climb back out on their own. Consolidated entries are recalled first, get more stable the more they are hit, and strong links make related topics surface too — closer to how the brain consolidates daytime experience overnight. Link weights decay with a 30-day half-life and spreading goes two hops (a strong link's strong link still surfaces, at lower priority). When you change your mind ("I live in Hangzhou" → "I live in Chengdu") the new entry **supersedes** the old one — judged by character-subsequence ratio, so a one-slot change is caught where bag-of-words similarity would dilute it; superseded entries are never injected and never woken, though editing one still overrides that. Seeing the same thing again (nearly verbatim, `consolidate.reinforceThreshold`) does not create a near-duplicate: it raises the existing entry's confidence by 0.1 — more than a recall hit's 0.05, because hearing it from you again beats the retriever matching it again. Confidence is therefore dynamic: creation only sets the starting point. Everything lives under `<DSH_HOME>/recall-rebuild/consolidated/`;
 - **Manage your long-term memories with slash commands**: `/recall-rebuild list [--all]` (view consolidated memories with type/confidence/hit count), `now` (trigger a consolidation immediately), `edit <id> <text>` (fix a misremembered entry) and `forget <id>` (explicitly delete an entry and its links). The command view follows the same per-user isolation rules; it silently skips registration when the host has no command service;
 - **Zero infra cost**: no GPU/VM — rebuild calls go through the host's existing LLM routing, ~hundreds of tokens per hit; uses only Node's built-in `node:sqlite`.
+- **Memory Sea visualization**: a sidebar panel projects your memories as a deep-space point cloud — dots are memories, lines are associations; the more nodes, the denser the rim, and after a few hundred it grows into the shape of a brain on its own (with a faint dotted scaffold while empty). Two switchable sources: **raw** (draws the underlying store directly — something to look at right after install, edges computed on the fly from character n-gram similarity) and **consolidated** (the stable entries produced by sleep consolidation, five colour-coded types, decayed association edges). Zero-dependency Canvas 2D, steady 60fps up to ~900 nodes, strictly read-only.
+
+![Memory Sea: memories as a deep-space point cloud](https://raw.githubusercontent.com/linkpain/dsh-recall-rebuild/main/docs/images/memory-sea.png)
 
 **Who it's for**: DSH desktop-pet / virtual-character / companion users who want the bot to "remember like a person" rather than "quote a file", including characters bridged to QQ/WeChat.
 
