@@ -148,6 +148,23 @@ check('iframe 允许同源脚本', Boolean(panelEl && String(panelEl.props.sandb
 const iconEl = listReg ? listReg.comp({ size: 16 }) : null;
 check('侧边栏图标是 svg', Boolean(iconEl && iconEl.type === 'svg'));
 
+// 槽位就绪顺序不确定:先到 panellist、后到 main 也必须最终注册两处,
+// 且 main 必须先于 panellist 落注册(否则宿主拒绝选中「缺页面」的行)。
+const order = [];
+let slotName = null;
+const deferred = {};
+const orderedCtx = { slots: {
+  inject: (slot, cb) => { deferred[slot] = cb; },
+  register: (opts, comp) => { order.push(opts.name); return () => {}; },
+} };
+clientMod.apply(orderedCtx);
+slotName = 'sidebar.panellist';
+deferred['sidebar.panellist']();
+check('panellist 先到时不抢注册', order.length === 0, order.join(','));
+slotName = 'main';
+deferred.main();
+check('main 到达后补齐两个槽位', order.join(',') === 'main,sidebar.panellist', order.join(','));
+
 console.log('\n[6] 包清单');
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 check('exports 暴露 ./client', pkg.exports['./client'] === './lib/client.js');
