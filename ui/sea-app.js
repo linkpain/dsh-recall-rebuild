@@ -1,12 +1,14 @@
 /**
  * 记忆识海 · 页面装配(零依赖)。
  *
- * 只做四件事:取数据 → 交给 SeaView → 悬停卡片 / 搜索 / 时间轴回放。
- * 渲染与几何全在 sea-view.js / sea-core.js,这里不碰像素。
+ * 只做五件事:取数据 → 交给渲染器 → 悬停卡片 / 搜索 / 时间轴回放 → 2D/3D 切换。
+ * 渲染与几何全在 sea-view.js / sea-view3d.js / sea-core.js,这里不碰像素。
  */
 import { SeaView, TYPE_LABEL, TYPE_COLOR } from './sea-view.js';
+import { SeaView3D, MORPH_MS } from './sea-view3d.js';
 
-const canvas = document.getElementById('sea');
+const canvas2d = document.getElementById('sea');
+const canvas3d = document.getElementById('sea3d');
 const cardEl = document.getElementById('card');
 const subEl = document.getElementById('sub');
 const legendEl = document.getElementById('legend');
@@ -16,6 +18,8 @@ const timeEl = document.getElementById('time');
 const timeLabelEl = document.getElementById('timeLabel');
 const playEl = document.getElementById('play');
 const switchEl = document.getElementById('switch');
+const modeEl = document.getElementById('mode');
+const resetEl = document.getElementById('resetView');
 const emptyTitleEl = document.getElementById('emptyTitle');
 const emptyBodyEl = document.getElementById('emptyBody');
 
@@ -25,20 +29,198 @@ const EMPTY_TEXT = {
   raw: ['没有读到记忆条目', '没有检测到可读的记忆库。<br />装一个记忆插件(灵枢 / mnemon / prime)后这里会自动点亮。'],
 };
 
+const MODE_KEY = 'sea.mode';
+const CAM_KEY = 'sea.cam3d';
+const FADE_MS = 240;
+
 // 首屏不指定 source,由服务端默认值决定(配置里改默认,面板自动跟随);
 // 用户点了切换按钮之后才显式带上 ?source=。
 let source = null;
 
-const view = new SeaView(canvas, {
+/* ───────────────────────── 渲染器 ───────────────────────── */
+
+let mode = '2d';
+let selectedId = null;
+let morphRaf = 0;
+let fadeTimer = 0;
+
+const view2d = new SeaView(canvas2d, {
   onHover: (node, cx, cy) => showCard(node, cx, cy),
-  onSelect: (node) => showCard(node, null, null, true),
+  onSelect: onSelectNode,
 });
+
+const view3d = new SeaView3D(canvas3d, {
+  onHover: (node, cx, cy) => showCard(node, cx, cy),
+  onSelect: onSelectNode,
+  onCamera: saveCamera,
+});
+
+// 拖动结束后不会走 onCamera(只有自转/滚轮会),这里补一次落盘
+canvas3d.addEventListener('pointerup', () => saveCamera(view3d.cameraState()));
+canvas3d.addEventListener('pointercancel', () => saveCamera(view3d.cameraState()));
+
+function currentView() {
+  return mode === '3d' ? view3d : view2d;
+}
+
+function otherView() {
+  return mode === '3d' ? view2d : view3d;
+}
+
+function onSelectNode(node) {
+  selectedId = node ? node.id : null;
+  showCard(node, null, null, !!node);
+  // 另一个渲染器同步选中态,切过去时不会丢
+  otherView().select(selectedId);
+}
+
+/* ───────────────────────── 2D / 3D 切换 ───────────────────────── */
+
+function storedMode() {
+  try {
+    const v = localStorage.getItem(MODE_KEY);
+    return v === '2d' || v === '3d' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function readJSON(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* 隐私模式 / 配额满:记忆失效不影响功能 */
+  }
+}
+
+function saveCamera(cam) {
+  if (!cam) return;
+  writeJSON(CAM_KEY, { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist });
+}
+
+function paintMode() {
+  document.body.classList.toggle('mode-3d', mode === '3d');
+  for (const btn of modeEl.querySelectorAll('button[data-view]')) {
+    btn.classList.toggle('on', btn.dataset.view === mode);
+  }
+}
+
+/** morph 补间:0 = 完全 2D 投影,1 = 完全 3D。 */
+function tweenMorph(from, to, ms, done) {
+  if (morphRaf) cancelAnimationFrame(morphRaf);
+  const start = performance.now();
+  const step = () => {
+    const t = Math.min(1, (performance.now() - start) / ms);
+    const e = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2; // easeInOutQuad
+    view3d.setMorph(from + (to - from) * e);
+    if (t < 1) morphRaf = requestAnimationFrame(step);
+    else {
+      morphRaf = 0;
+      done?.();
+    }
+  };
+  morphRaf = requestAnimationFrame(step);
+}
+
+function fade3d(opacity, ms, done) {
+  if (fadeTimer) clearTimeout(fadeTimer);
+  canvas3d.style.transition = `opacity ${ms}ms ease`;
+  canvas3d.style.opacity = String(opacity);
+  fadeTimer = window.setTimeout(() => {
+    fadeTimer = 0;
+    done?.();
+  }, ms + 30);
+}
+
+/** 把当前模式对应的渲染器拉起来、另一个收掉。 */
+function activateView() {
+  if (mode === '3d') {
+    canvas3d.hidden = false;
+    canvas3d.style.transition = 'none';
+    canvas3d.style.opacity = '0';
+    view3d.resize();
+    syncData(view3d);
+    view3d.setQuery(qEl.value);
+    view3d.select(selectedId);
+    view3d.setMorph(0);
+    view3d.start();
+    void canvas3d.offsetWidth; // 让 opacity:0 先落地,否则过渡不生效
+    fade3d(1, FADE_MS);
+    tweenMorph(0, 1, MORPH_MS, () => view2d.stop());
+    return;
+  }
+  view2d.resize();
+  syncData(view2d);
+  view2d.setQuery(qEl.value);
+  view2d.select(selectedId);
+  view2d.start();
+  if (!canvas3d.hidden) {
+    tweenMorph(view3d.morph, 0, Math.min(MORPH_MS, 220));
+    fade3d(0, FADE_MS, () => {
+      canvas3d.hidden = true;
+      view3d.stop();
+    });
+  }
+}
+
+function setMode(next, { persist = true } = {}) {
+  if (next !== '2d' && next !== '3d') return;
+  if (next === mode) {
+    paintMode();
+    return;
+  }
+  mode = next;
+  if (persist) {
+    try {
+      localStorage.setItem(MODE_KEY, mode);
+    } catch {
+      /* 忽略 */
+    }
+  }
+  paintMode();
+  activateView();
+}
+
+modeEl.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-view]');
+  if (!btn) return;
+  setMode(btn.dataset.view);
+});
+
+resetEl.addEventListener('click', () => {
+  view3d.resetCamera();
+  saveCamera(view3d.cameraState());
+});
+
+/* ───────────────────────── 数据 ───────────────────────── */
 
 let allNodes = [];
 let allLinks = [];
+let lastNodes = [];
+let lastLinks = [];
+let dataVersion = 0;
+const seenVersion = { '2d': -1, '3d': -1 };
+let lastKey = null;
 let minT = 0;
 let maxT = 0;
 let playing = 0;
+
+/** 只在数据真的变了才把几何算进某个渲染器(3D 建点很贵,回放时别每帧重算)。 */
+function syncData(view) {
+  const key = view === view3d ? '3d' : '2d';
+  if (seenVersion[key] === dataVersion) return;
+  view.setData(lastNodes, lastLinks);
+  seenVersion[key] = dataVersion;
+}
 
 function fmtDate(ts) {
   if (!ts) return '';
@@ -98,7 +280,16 @@ function applyTime(cutoff) {
   const nodes = allNodes.filter((n) => !cutoff || (n.createdAt ?? 0) <= cutoff);
   const keep = new Set(nodes.map((n) => n.id));
   const links = allLinks.filter((l) => keep.has(l.source) && keep.has(l.target));
-  view.setData(nodes, links);
+  // 回放时每帧都会进来,但节点集合只在跨过某条记忆的 createdAt 时才变;
+  // 用「条数 + 末位 id」判断是否真的变了(节点已按时间排序)。
+  const key = `${nodes.length}|${nodes.length ? nodes[nodes.length - 1].id : ''}`;
+  if (key !== lastKey) {
+    lastKey = key;
+    lastNodes = nodes;
+    lastLinks = links;
+    dataVersion += 1;
+    syncData(currentView());
+  }
   renderLegend(nodes);
   subEl.textContent = cutoff
     ? `${nodes.length} 条记忆 · 截至 ${fmtDate(cutoff)}`
@@ -127,6 +318,19 @@ async function load() {
   // 服务端可能回落到默认源(非法参数),以响应里的 meta.source 为准
   if (data.meta?.source) source = data.meta.source;
   paintSwitch();
+  // 配置里的默认值只在用户没手动动过时生效:切过视图 / 转过相机 / URL 指定过,都以用户为准。
+  const m = data.meta ?? {};
+  const qsp = new URLSearchParams(location.search);
+  if (!storedMode() && !qsp.get('view') && (m.view === '2d' || m.view === '3d')) {
+    setMode(m.view, { persist: false });
+  }
+  if (!camTouched) {
+    if (Number.isFinite(m.depth)) view3d.setDepth(Math.max(0.1, Math.min(1.2, m.depth)));
+    if (typeof m.fissure === 'boolean') view3d.setFissure(m.fissure);
+    if (Number.isFinite(m.autoRotate) || typeof m.autoRotate === 'boolean') view3d.setAutoRotate(!!m.autoRotate);
+    if (m.perspective === 'strong') view3d.setZoom(1.8);
+    else if (m.perspective === 'soft') view3d.setZoom(5.0);
+  }
   const [title, body] = EMPTY_TEXT[source] ?? EMPTY_TEXT.consolidated;
   emptyTitleEl.textContent = title;
   emptyBodyEl.innerHTML = body;
@@ -135,12 +339,16 @@ async function load() {
   timeLabelEl.textContent = '全部';
   allNodes = (data.nodes ?? []).slice().sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
   allLinks = data.links ?? [];
+  lastKey = null;
+  selectedId = null;
+  view2d.select(null);
+  view3d.select(null);
   const times = allNodes.map((n) => n.createdAt ?? 0).filter((t) => t > 0);
   minT = times.length ? Math.min(...times) : 0;
   maxT = times.length ? Math.max(...times) : 0;
   timeEl.disabled = !times.length || maxT === minT;
   applyTime(0);
-  view.start();
+  currentView().start();
 }
 
 switchEl.addEventListener('click', (ev) => {
@@ -149,12 +357,16 @@ switchEl.addEventListener('click', (ev) => {
   source = btn.dataset.source;
   paintSwitch();
   subEl.textContent = '正在读取…';
-  view.setQuery('');
+  view2d.setQuery('');
+  view3d.setQuery('');
   qEl.value = '';
   load();
 });
 
-qEl.addEventListener('input', () => view.setQuery(qEl.value));
+qEl.addEventListener('input', () => {
+  view2d.setQuery(qEl.value);
+  view3d.setQuery(qEl.value);
+});
 
 timeEl.addEventListener('input', () => {
   stopPlay();
@@ -196,5 +408,41 @@ playEl.addEventListener('click', () => {
   playing = requestAnimationFrame(step);
 });
 
-window.addEventListener('resize', () => view.resize());
+window.addEventListener('resize', () => {
+  view2d.resize();
+  view3d.resize();
+});
+
+/* ───────────────────────── 启动 ───────────────────────── */
+
+const qs = new URLSearchParams(location.search);
+const qView = qs.get('view');
+const qDepth = Number(qs.get('depth'));
+const qDist = Number(qs.get('dist'));
+const qYaw = Number(qs.get('yaw'));
+const qPitch = Number(qs.get('pitch'));
+
+const cam = readJSON(CAM_KEY);
+// 用户自己调过相机(存过角度,或 URL 指定过参数)→ 配置里的相机默认值不再覆盖
+const camTouched = !!cam || ['yaw', 'pitch', 'dist'].some((k) => qs.has(k));
+if (cam && Number.isFinite(cam.yaw) && Number.isFinite(cam.pitch)) view3d.setCamera(cam.yaw, cam.pitch);
+if (cam && Number.isFinite(cam.dist)) view3d.setZoom(cam.dist);
+// URL 里的角度用「度」写(yaw=-28&pitch=14),和人说话一致;内部是弧度。
+const DEG = Math.PI / 180;
+if (qs.has('yaw') && Number.isFinite(qYaw)) {
+  view3d.setCamera(qYaw * DEG, (qs.has('pitch') && Number.isFinite(qPitch) ? qPitch : view3d.pitch / DEG) * DEG);
+}
+if (Number.isFinite(qDist) && qs.has('dist')) view3d.setZoom(qDist);
+if (Number.isFinite(qDepth) && qs.has('depth')) view3d.setDepth(Math.max(0.1, Math.min(1.2, qDepth)));
+
+setMode(qView === '2d' || qView === '3d' ? qView : storedMode() ?? '2d', { persist: false });
+if (mode === '3d') {
+  // 首屏直接进 3D:不走淡入,免得闪一下
+  canvas3d.hidden = false;
+  canvas3d.style.opacity = '1';
+  view3d.setMorph(1);
+  view3d.start();
+  view2d.stop();
+}
+paintMode();
 load();

@@ -119,6 +119,11 @@ check('数据端点 no-store', data.body.length > 0 && parsed.nodes.length === 3
 check('数据含 meta', parsed.meta.runCount === 3);
 check('数据不含内部字段', parsed.nodes[0].userKey === undefined && parsed.nodes[0].sourceIds === undefined);
 check('默认源是巩固层', parsed.meta.source === 'consolidated', String(parsed.meta.source));
+check('meta 带默认视角 2d', parsed.meta.view === '2d', String(parsed.meta.view));
+check('meta 带默认厚度 0.6', parsed.meta.depth === 0.6, String(parsed.meta.depth));
+check('meta 带默认透视 soft', parsed.meta.perspective === 'soft', String(parsed.meta.perspective));
+check('meta 带默认纵向裂 true', parsed.meta.fissure === true, String(parsed.meta.fissure));
+check('meta 带默认自转 false', parsed.meta.autoRotate === false, String(parsed.meta.autoRotate));
 const rawData = await get('/recall-rebuild/sea/data?source=raw');
 const rawParsed = JSON.parse(rawData.body);
 check('?source=raw 走原始层', rawData.status === 200 && rawParsed.meta.source === 'raw', rawData.status + ' ' + rawParsed.meta?.source);
@@ -130,6 +135,9 @@ check('原始层不相干条目不连', !rawParsed.links.some(
   (l) => [l.source, l.target].includes('r3')), JSON.stringify(rawParsed.links));
 check('原始层边权落在 0.15–1', rawParsed.links.every((l) => l.weight >= 0.15 && l.weight <= 1));
 check('原始层时间转成毫秒', rawParsed.nodes.every((n) => n.createdAt > 1e11), JSON.stringify(rawParsed.nodes.map((n) => n.createdAt)));
+const mod3d = await get('/recall-rebuild/sea/sea-view3d.js');
+check('3D 渲染器模块可达', mod3d.status === 200, String(mod3d.status));
+check('3D 模块 MIME 正确', (mod3d.type ?? '').includes('javascript'), String(mod3d.type));
 const badSource = await get('/recall-rebuild/sea/data?source=nonsense');
 check('非法 source 回落到默认源', JSON.parse(badSource.body).meta.source === 'consolidated');
 
@@ -141,6 +149,27 @@ const outside = await get('/recall-rebuild/sea/../package.json');
 check('越界路径 404/403', outside.status === 404 || outside.status === 403, `${outside.status}`);
 const outsideRoot = await get('/recall-rebuild/package.json');
 check('非 /sea/ 前缀 404', outsideRoot.status === 404, `${outsideRoot.status}`);
+
+// 配置透传:换一组非默认值挂一遍,meta 必须原样带出去(否则面板永远按默认渲染)
+let handler3d;
+const fakeCtx3d = {
+  webServer: { register: (route) => { handler3d = route.handler; return () => {}; } },
+  effect: (fn) => fn(),
+};
+web.mountSeaWeb({ inject: (deps, cb) => cb({ ...fakeCtx3d, webStartup: { trustedHosts: [] } }) }, stores, {
+  enabled: true, maxNodes: 0, source: 'consolidated', rawLinkThreshold: 0.12,
+  view: '3d', depth: 0.85, autoRotate: true, perspective: 'strong', fissure: false,
+  logger: { debug() {}, info() {}, warn() {} },
+});
+const server3d = http.createServer((rq, rs) => handler3d(rq, rs));
+await new Promise((r) => server3d.listen(0, '127.0.0.1', r));
+const meta3d = JSON.parse(await (await fetch(`http://127.0.0.1:${server3d.address().port}/recall-rebuild/sea/data`)).text()).meta;
+check('sea.view 透传到 meta', meta3d.view === '3d', String(meta3d.view));
+check('sea.depth 透传到 meta', meta3d.depth === 0.85, String(meta3d.depth));
+check('sea.autoRotate 透传到 meta', meta3d.autoRotate === true, String(meta3d.autoRotate));
+check('sea.perspective 透传到 meta', meta3d.perspective === 'strong', String(meta3d.perspective));
+check('sea.fissure 透传到 meta', meta3d.fissure === false, String(meta3d.fissure));
+server3d.close();
 
 server.close();
 
@@ -193,7 +222,63 @@ slotName = 'main';
 deferred.main();
 check('main 到达后补齐两个槽位', order.join(',') === 'main,sidebar.panellist', order.join(','));
 
-console.log('\n[6] 包清单');
+console.log('\n[6] sea-core 3D 几何');
+const core3d = await import(`${distUrl}../ui/sea-core.js`);
+const {
+  placeNode, placeNode3D, brainRadius, clampPitch, wrapYaw, orbitPoint, perspective,
+  BRAIN_DEPTH, BRAIN_ASPECT, MAX_PITCH,
+} = core3d;
+const ids = Array.from({ length: 240 }, (_, i) => `n${i}`);
+let uvMismatch = 0;
+let zMax = 0;
+let outsideBall = 0;
+const r3 = brainRadius(BRAIN_DEPTH);
+for (const id of ids) {
+  const a = placeNode(id, 0.38);
+  const b = placeNode3D(id, 0.38);
+  if (a.u !== b.u || a.v !== b.v) uvMismatch += 1;
+  zMax = Math.max(zMax, Math.abs(b.z));
+  const hw = BRAIN_DEPTH * 0.5;
+  if (Math.abs(b.z) > hw + 1e-9) outsideBall += 1;
+}
+check('placeNode3D 的 (u,v) 与 placeNode 逐位相同', uvMismatch === 0, String(uvMismatch));
+check('z 不超过半厚', zMax <= BRAIN_DEPTH * 0.5 + 1e-9, zMax.toFixed(4));
+check('z 全部落在椭球内', outsideBall === 0, String(outsideBall));
+check('brainRadius 是外接球半径', Math.abs(r3 - Math.hypot(0.5, BRAIN_ASPECT / 2, BRAIN_DEPTH * 0.5)) < 1e-9, r3.toFixed(4));
+
+// 纵向裂:够厚的脑在 z≈0 处必须留出缝,否则左右半球黏成一片
+const zs = ids.map((id) => Math.abs(placeNode3D(id, 0.38).z)).sort((a, b) => a - b);
+check('纵向裂留出缝(z=0 附近没有点)', zs[0] > 0.001, zs[0].toFixed(5));
+check('裂开的缝窄于半厚', zs[0] < BRAIN_DEPTH * 0.5, zs[0].toFixed(5));
+
+const o0 = orbitPoint(0.5, 0.375, 0, 0, 0);
+check('orbit 零角是恒等', Math.abs(o0.x) < 1e-12 && Math.abs(o0.y) < 1e-12 && Math.abs(o0.z) < 1e-12, JSON.stringify(o0));
+const oy = orbitPoint(0.5, 0.375, 0.2, Math.PI, 0);
+check('绕 yaw 180° 后 x 取反', Math.abs(oy.x + 0) < 1e-9 && Math.abs(oy.z + 0.2) < 1e-9, JSON.stringify(oy));
+check('wrapYaw 折回 (-π, π]', Math.abs(wrapYaw(7) - (7 - 2 * Math.PI)) < 1e-9, String(wrapYaw(7)));
+check('clampPitch 卡在 MAX_PITCH', Math.abs(clampPitch(3) - MAX_PITCH) < 1e-9, String(clampPitch(3)));
+check('perspective 近处放大', perspective(0.3, 5) > perspective(-0.3, 5));
+check('perspective 不为负/零', perspective(0.6, 1.2) > 0);
+
+console.log('\n[7] 双渲染器接线');
+const html = readFileSync(path.join(root, 'ui', 'sea.html'), 'utf8');
+check('页面有 2D 画布', html.includes('id="sea"'));
+check('页面有 3D 画布', html.includes('id="sea3d"'));
+check('3D 画布默认隐藏', /id="sea3d"[^>]*hidden/.test(html));
+check('有 2D/3D 分段按钮', html.includes('data-view="2d"') && html.includes('data-view="3d"'));
+check('有回正按钮', html.includes('id="resetView"'));
+const appSrc = readFileSync(path.join(root, 'ui', 'sea-app.js'), 'utf8');
+check('app 同时引入两个渲染器', appSrc.includes('SeaView3D') && appSrc.includes('SeaView'));
+check('模式记忆键是 sea.mode', appSrc.includes("'sea.mode'"));
+check('相机记忆键是 sea.cam3d', appSrc.includes("'sea.cam3d'"));
+check('URL 支持 ?view=', appSrc.includes("get('view')"));
+check('morph 过渡存在', /MORPH_MS|tweenMorph/.test(appSrc));
+const view3dSrc = readFileSync(path.join(root, 'ui', 'sea-view3d.js'), 'utf8');
+check('sea-view3d 导出 SeaView3D', /export class SeaView3D/.test(view3dSrc));
+check('3D 渲染器有相机接口', /setCamera\(/.test(view3dSrc) && /resetCamera\(/.test(view3dSrc));
+
+
+console.log('\n[8] 包清单');
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 check('exports 暴露 ./client', pkg.exports['./client'] === './lib/client.js');
 check('dsh.client.platform = web', pkg.dsh?.client?.platform === 'web');

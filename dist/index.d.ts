@@ -114,11 +114,21 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
         maxNodes: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         source: import("@deepseek-ai/schemastery").default<"consolidated" | "raw", "consolidated" | "raw", "defined">;
         rawLinkThreshold: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+        view: import("@deepseek-ai/schemastery").default<"2d" | "3d", "2d" | "3d", "defined">;
+        depth: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+        autoRotate: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        perspective: import("@deepseek-ai/schemastery").default<"soft" | "strong", "soft" | "strong", "defined">;
+        fissure: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         maxNodes: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         source: import("@deepseek-ai/schemastery").default<"consolidated" | "raw", "consolidated" | "raw", "defined">;
         rawLinkThreshold: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+        view: import("@deepseek-ai/schemastery").default<"2d" | "3d", "2d" | "3d", "defined">;
+        depth: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+        autoRotate: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        perspective: import("@deepseek-ai/schemastery").default<"soft" | "strong", "soft" | "strong", "defined">;
+        fissure: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     }>>, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
@@ -231,11 +241,21 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
         maxNodes: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         source: import("@deepseek-ai/schemastery").default<"consolidated" | "raw", "consolidated" | "raw", "defined">;
         rawLinkThreshold: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+        view: import("@deepseek-ai/schemastery").default<"2d" | "3d", "2d" | "3d", "defined">;
+        depth: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+        autoRotate: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        perspective: import("@deepseek-ai/schemastery").default<"soft" | "strong", "soft" | "strong", "defined">;
+        fissure: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         maxNodes: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         source: import("@deepseek-ai/schemastery").default<"consolidated" | "raw", "consolidated" | "raw", "defined">;
         rawLinkThreshold: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+        view: import("@deepseek-ai/schemastery").default<"2d" | "3d", "2d" | "3d", "defined">;
+        depth: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+        autoRotate: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        perspective: import("@deepseek-ai/schemastery").default<"soft" | "strong", "soft" | "strong", "defined">;
+        fissure: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     }>>, "defined">;
 }>>, "defined">;
 export declare function apply(ctx: Context, config: RecallRebuildConfig): Promise<void>;

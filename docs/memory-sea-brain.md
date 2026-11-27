@@ -467,5 +467,100 @@ export interface MemoryStore {
 
 `sea.source` 默认 **`raw`**。理由是第一次打开必须**有东西看**:巩固层在冷启动时必然是空的,而空面板会被当成「插件坏了」。想只看稳定记忆的用户在面板右上角点一下即可,选择会保持到下次打开。
 
+## 十五、3D:在 2D 之上加一维(v0.1.21)
+
+2D 的脑剪影是**投影**出来的:点是 (u,v),深度只用来调亮度。这带来一个天花板——你永远只能从一个角度看它。用户要的是「能 360° 拖起来转」。
+
+### 不动的部分:2D 一行没改
+
+最省事的做法是给 3D 写一套新几何,但那会让两套画面**长得不一样**,切换时像换了个产品。所以 `placeNode3D(id, rimRatio, opts)` 完整复用了 `placeNode` 的那套拒绝采样(900 次 attempt、`insidePoly`、`boundaryDistance`、RIM_INNER/RIM_OUTER、`density` 值噪声),只在最后多算一个 z。断言 `uvMismatch === 0`(400 个 id 的 (u,v) 逐位相同)就是这条约束的守卫。
+
+于是 `morph = 0` 时 3D 渲染器画出来的**就是 2D 那一帧**——模式切换不是两套画面互切,而是同一批点从平面「飞」进纵深。
+
+### z 怎么来
+
+- **皮层点**(被 `rimTaper` 压到轮廓上的那 38%):`z = sign * hw * (0.86 + 0.14 * rand)`,贴在椭球表面,所以边缘天然是立体的壳;
+- **内部点**:`z = (rand * 2 - 1) * hw * cbrt(rand)`,立方根是为了**体积均匀**(直接线性取会让点挤在中面);
+- `hw = depth * 0.5 * halfWidth(u, v)`,`halfWidth` 与 `placeNode` 的 spread 包络同源,所以椭球在平面上的投影与 2D 轮廓严丝合缝。
+
+**`depth` 的语义踩过一次坑**:一开始它表示「半厚」(0.6 就是 ±0.6),结果 `brainRadius` 算出来 1.0 以上,取景被撑小、点云薄得像张纸。改成**厚度比(厚/宽)**后,0.6 意味着最厚处是宽度的 60%,`brainRadius(0.6) = 0.6933`,画面才正常。配置项 `sea.depth` 的 min/max 也因此是 0.3–0.9。
+
+### 纵向裂:让「两个半球」看得出来
+
+大脑最容易被识别的特征不是轮廓,是中间那道纵裂。做法是在 `placeNode3D` 末尾对 z 做一次**推开**:
+
+```js
+const gap = Math.min(fissure, hw * 0.6);
+if (Math.abs(z) < gap) z = (z < 0 ? -1 : 1) * (gap + (hw - gap) * Math.sqrt(rand));
+```
+
+`sqrt(rand)` 让点落在 [gap, hw] 时靠近 gap 一侧更密(缝隙边缘更实)。`sea.fissure` 默认 `true`——关掉的话正视角就是一颗光滑的蛋。
+
+### 相机:轨道 + 透视,但别指望透视撑起立体感
+
+`orbitPoint(u, v, z, yaw, pitch)` 是标准轨道变换,`perspective(z, dist) = dist / max(0.15, dist - z)`。两处约束:`clampPitch` 卡在 `MAX_PITCH = 1.4835`(≈85°,防止万向节翻转),`wrapYaw` 把 yaw 折回 [-π, π](360° 旋转后数值不漂)。
+
+**关键实测**:默认 `dist = 5.0` 时,近端与远端的透视差只有约 11%——近似正交投影。所以立体感**不能靠透视**,必须靠两条更硬的线索:
+
+```js
+const t = clamp((p.z + r) / (2 * r));        // 0 = 最远,1 = 最近
+fog  = 0.20 + 0.80 * t ** 1.15;              // 亮度:远端压到 20%
+size = k * (0.62 + 0.76 * t);                // 尺寸:近端 1.38 倍
+```
+
+这两个系数是调出来的:只用透视时,−27° 侧视看着像「一张贴了亮点的圆盘」;加上 fog + size 后才有纵深。想更强烈可以把 `sea.perspective` 设成 `strong`(dist 1.8,透视差约 40%),代价是边缘明显拉伸。
+
+### 取景:按当前视角的椭球包围盒算,不是外接球
+
+早期版本用外接球 `sc = min(w,h) * 0.86 / (2 * r)`,结果是**侧面永远比正面小一圈**,而且 3D 画面整体比 2D 小约 25%。改成按当前 yaw/pitch 投影后的包围盒:
+
+```js
+const halfW = Math.sqrt(A*A*cos2y + C*C*sin2y);
+const halfH = Math.sqrt(B*B*cos2p + (A*A*sin2y + C*C*cos2y) * sin2p);
+const sc = Math.min(w * 0.78 / (2 * halfW), h * 0.78 / (2 * halfH));
+```
+
+其中 `A = 0.5`、`B = BRAIN_ASPECT / 2`、`C = depth * 0.5`。取景系数 `fitSc` 每帧缓动 0.28,所以转视角时画面不会突然跳大小。
+
+### 默认角度:−27° / 12°
+
+正面(yaw = 0)最像脑,但完全看不出厚度;−45° 以上厚度有了、脑形散了。扫了 0 / −14 / −22 / −27 / −30 五档,−27° + 12° 俯角是「一眼是脑、又能看出是立体的」那个点,定为默认值,也是「回正」的目标值。
+
+### 交互与记忆
+
+- 拖拽:`DRAG_SENS = 0.005`,松手后按 `INERTIA = 0.92` 衰减,低于 `INERTIA_MIN` 停止;
+- 滚轮:`ZOOM_STEP = 1.12`,夹在 [1.2, 8.0];
+- 单击选中、悬停出卡片——两个渲染器共用同一套 `onHover` / `onSelect`,选中态互相同步(`otherView().select()`);
+- 双击回正,`sea.cam3d` 存 `{yaw, pitch, dist}`,`sea.mode` 存 `2d | 3d`,下次打开原样恢复;
+- URL 参数(`?view=3d&yaw=-28&pitch=14&dist=4.2&depth=0.85`)**角度写度、不写弧度**——写弧度时人算不出来,截图脚本全歪了;
+- 500ms 的 morph 用 `easeInOutQuad` 插值 x/y/scale/alpha/depthT,3D 画布淡入 240ms。
+
+### 性能降级
+
+`_trackPerf` 连续 12 帧均值 > 22ms 就升一级 LOD:0 = 全量(点和全部边)/ 1 = 只画最强 600 条边 / 2 = 只画点。降级单向、不回弹——避免在阈值附近反复抖动。拖动过程中跳过 bloom 与呼吸位移,优先保证跟手。
+
+### 窄侧边栏
+
+侧边栏只有 420px 时,标题、模式按钮、数据源切换、搜索框在一条线上必然打架。媒体查询 `max-width: 560px` 下改成两行:第一行标题 + 模式(靠右),第二行数据源(靠左)+ 搜索(靠右,宽度收到 132px);时间轴从右下挪到底部整宽,图例压在它下面。**媒体查询必须写在样式表末尾**——放在中间会被后面的基础规则覆盖(踩过一次,量出来 `.switch` 还在 `left: 50%`)。
+
+### 配置
+
+```yaml
+sea:
+  view: 2d          # 首次打开的模式:2d | 3d(用户切过就听用户的)
+  depth: 0.6        # 厚度比,0.3–0.9;0.42 扁 / 0.6 默认 / 0.85 饱满
+  perspective: soft # soft(dist 5.0,温和) | strong(dist 1.8,强烈)
+  fissure: true     # 纵向裂;false = 光滑的蛋
+  autoRotate: false # 闲置自转(≈6°/s);默认静置
+```
+
+### 验证
+
+- `scripts/verify-sea.mjs` 的 [6] 断言几何 12 项((u,v) 逐位一致、z 不超半厚、全在椭球内、`brainRadius` 是外接球半径、纵向裂留缝、`orbit` 零角恒等、绕 yaw 180° 后 x 取反、`wrapYaw` 折回、`clampPitch` 卡顶、`perspective` 近大远小且不为负);
+- [7] 断言接线 12 项(两张画布、3D 默认 hidden、`data-view`、`#resetView`、两个 localStorage 键、`?view=`、morph、`SeaView3D` 的相机接口);
+- meta 透传:默认值与一组非默认值各挂一遍,确认 5 个字段原样到达客户端;
+- 真机用 CDP 跑过 8 步:首次进入是 2D → 切 3D → 刷新仍 3D → 滚轮改 dist → 回正复位 → 3D 下搜索高亮 → 切回 2D → 悬停出卡片。全过。
+
+
 
 

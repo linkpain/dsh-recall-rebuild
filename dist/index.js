@@ -99,6 +99,11 @@ export async function apply(ctx, config) {
         maxNodes: config.sea.maxNodes,
         source: config.sea.source,
         rawLinkThreshold: config.sea.rawLinkThreshold,
+        view: config.sea.view,
+        depth: config.sea.depth,
+        autoRotate: config.sea.autoRotate,
+        perspective: config.sea.perspective,
+        fissure: config.sea.fissure,
         logger,
     });
     // 睡眠巩固调度:启动后空闲 10s 查一次,之后按 checkIntervalMs 定时查;

@@ -75,5 +75,11 @@ export const recallRebuildSchema = Schema.object({
         // 原始层库里有什么就画什么,开箱即见。想只看聚类后的稳定记忆,面板上点一下即可。
         source: Schema.union(['consolidated', 'raw']).default('raw'),
         rawLinkThreshold: Schema.number().min(0).max(0.9).default(0.12),
+        // 默认 2D:老用户升级后打开还是那张图,3D 是要主动点的。
+        view: Schema.union(['2d', '3d']).default('2d'),
+        depth: Schema.number().min(0.3).max(0.9).default(0.6),
+        autoRotate: Schema.boolean().default(false),
+        perspective: Schema.union(['soft', 'strong']).default('soft'),
+        fissure: Schema.boolean().default(true),
     }).default({}),
 }).default({});

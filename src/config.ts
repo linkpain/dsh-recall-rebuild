@@ -95,6 +95,19 @@ export interface SeaOptions {
   source: 'consolidated' | 'raw';
   /** 原始层的连边阈值(字符 n-gram 余弦);调低线更密,调高更疏。 */
   rawLinkThreshold: number;
+  /**
+   * 首次打开用哪种视图。2d = 平面星云(默认,和旧版完全一致);
+   * 3d = 可 360° 拖拽的立体点云。面板上仍可随时切换,并记住用户自己的选择。
+   */
+  view: '2d' | '3d';
+  /** 3D 厚度比(厚 / 宽):0.42 扁平 / 0.60 默认 / 0.85 饱满。 */
+  depth: number;
+  /** 3D 闲置自转;默认关闭(静置画面更适合长时间挂在后台)。 */
+  autoRotate: boolean;
+  /** 3D 透视强度:soft = 温和(dist 5.0),strong = 强烈(dist 1.8,鱼眼感)。 */
+  perspective: 'soft' | 'strong';
+  /** 3D 纵向裂(左右半球之间的缝隙);关掉是完整椭球。 */
+  fissure: boolean;
 }
 
 /** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
@@ -272,5 +285,11 @@ export const recallRebuildSchema = Schema.object({
     // 原始层库里有什么就画什么,开箱即见。想只看聚类后的稳定记忆,面板上点一下即可。
     source: Schema.union(['consolidated', 'raw']).default('raw'),
     rawLinkThreshold: Schema.number().min(0).max(0.9).default(0.12),
+    // 默认 2D:老用户升级后打开还是那张图,3D 是要主动点的。
+    view: Schema.union(['2d', '3d']).default('2d'),
+    depth: Schema.number().min(0.3).max(0.9).default(0.6),
+    autoRotate: Schema.boolean().default(false),
+    perspective: Schema.union(['soft', 'strong']).default('soft'),
+    fissure: Schema.boolean().default(true),
   }).default({}),
 }).default({});

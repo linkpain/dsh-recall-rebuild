@@ -330,7 +330,15 @@ function mountRoutes(wctx, getStores, trustedHosts, opts) {
  * ?source=raw|consolidated 可临时覆盖默认值(面板切换按钮用它),非法值忽略。
  */
 function seaPayload(stores, opts, override) {
-    const meta = stores.consolidated.metaInfo();
+    const info = stores.consolidated.metaInfo();
+    const meta = {
+        ...info,
+        view: opts.view ?? '2d',
+        depth: opts.depth ?? 0.6,
+        autoRotate: opts.autoRotate ?? false,
+        perspective: opts.perspective ?? 'soft',
+        fissure: opts.fissure ?? true,
+    };
     const source = override === 'raw' || override === 'consolidated' ? override : opts.source;
     if (source === 'raw') {
         const store = stores.memory;

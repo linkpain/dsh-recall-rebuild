@@ -216,3 +216,121 @@ export function placeNode(id, rimRatio) {
   // 兜底:轮廓中心(理论上到不了这里)
   return { u: 0.5, v: BRAIN_ASPECT * 0.5, z: 0 };
 }
+
+/* ───────────────────────── 3D 体积(v0.1.21) ─────────────────────────
+ *
+ * 2D 模式用 placeNode:皮层点被 rimTaper 压在中面上,靠「点描边」画出脑剪影。
+ * 3D 模式用 placeNode3D:同样的 (u, v) 采样,但 z 铺满椭球体积,
+ * 于是侧视仍是脑形、正面是两个半球、任意角度都是实心的。
+ *
+ * 关键约束:**两者对同一 id 给出同一 (u, v)**。这样 2D↔3D 切换时
+ * 点在屏幕上只是沿深度方向鼓起来,不会横向乱跳。
+ */
+
+/** 默认厚度比(厚 / 宽)。0.60 → 厚度是宽度的 60%,接近真实脑的宽厚比。 */
+export const BRAIN_DEPTH = 0.6;
+
+/** 纵向裂半宽:左右半球之间的缝隙,3D 下才可见。 */
+export const FISSURE = 0.035;
+
+/** 俯仰角上限(85°):再往上画面会上下颠倒,空间感断掉。 */
+export const MAX_PITCH = 1.4835;
+
+/** 椭球包络的半宽(0..1),与 placeNode 里的 spread 同源。 */
+export function halfWidth(u, v) {
+  const ex = 1 - ((u - 0.5) / 0.5) ** 2;
+  const ey = 1 - (v / BRAIN_ASPECT - 0.5) ** 2 / 0.25;
+  return Math.sqrt(Math.max(Math.min(ex, ey), 0.02));
+}
+
+/**
+ * 一条记忆的 3D 位置:(u, v) 与 placeNode 完全一致,z 铺在体积里。
+ *
+ * - 皮层点(wantRim)落在椭球**表面**的近轮廓处,侧视时仍是那一圈亮点;
+ * - z 半轴 = depth * 0.5 * halfWidth:depth 是「厚 / 宽」比,0.6 表示厚度为宽度 60%;
+ * - 内部点按 cbrt 均匀填充体积(直接用 rand 会向中心聚集);
+ * - 纵向裂:落在 |z| < gap 的点被推到缝隙外,正面才分得开两个半球。
+ *
+ * @param {string} id 记忆 id。
+ * @param {number} rimRatio 0..1,皮层配额(来自 nodeMetrics)。
+ * @param {{ depth?: number, fissure?: number }} [opts]
+ */
+export function placeNode3D(id, rimRatio, opts = {}) {
+  const depth = opts.depth ?? BRAIN_DEPTH;
+  const fissure = opts.fissure ?? FISSURE;
+  const h = hashId(id);
+  const rand = rngFrom(h);
+  const rimRank = ((h >>> 11) % 1000) / 1000;
+  const wantRim = rimRank < rimRatio;
+  const RIM_INNER = 0.03;
+  const RIM_OUTER = 0.052;
+
+  for (let attempt = 0; attempt < 900; attempt += 1) {
+    const u = rand();
+    const v = rand() * BRAIN_ASPECT;
+    if (!insidePoly(BRAIN_OUTLINE, u, v)) continue;
+    const edge = boundaryDistance(BRAIN_OUTLINE, u, v);
+    if (wantRim) {
+      if (edge > RIM_OUTER) continue;
+      if (rand() > 0.55 + 0.45 * (1 - edge / RIM_OUTER)) continue;
+    } else {
+      if (edge < RIM_INNER) continue;
+      if (rand() > density(u, v, edge, 0)) continue;
+    }
+    // 半轴:宽度方向 u∈[0,1] 半轴 0.5,深度方向同理 → z 半轴 = depth * 0.5
+    const hw = depth * 0.5 * halfWidth(u, v);
+    let z;
+    if (wantRim) {
+      // 贴在椭球表面:侧视时投影到轮廓线上,3D 转动时沿表面滑
+      const sign = rand() < 0.5 ? -1 : 1;
+      z = sign * hw * (0.86 + 0.14 * rand());
+    } else {
+      // 体积内均匀:cbrt 抵消球壳体积随半径平方增长
+      z = (rand() * 2 - 1) * hw * Math.cbrt(rand());
+    }
+    const gap = Math.min(fissure, hw * 0.6);
+    if (Math.abs(z) < gap) {
+      z = (z < 0 ? -1 : 1) * (gap + (hw - gap) * Math.sqrt(rand()));
+    }
+    return { u, v, z };
+  }
+  return { u: 0.5, v: BRAIN_ASPECT * 0.5, z: 0 };
+}
+
+/** 大脑外接球半径(含深度),用于旋转时的稳定取景。 */
+export function brainRadius(depth = BRAIN_DEPTH) {
+  return Math.sqrt(0.5 * 0.5 + (BRAIN_ASPECT / 2) ** 2 + (depth * 0.5) ** 2);
+}
+
+/** 俯仰角夹紧。 */
+export function clampPitch(p) {
+  return Math.max(-MAX_PITCH, Math.min(MAX_PITCH, p));
+}
+
+/** 偏航角归一到 (-π, π],避免长时间拖动后浮点精度流失。 */
+export function wrapYaw(y) {
+  const TAU = Math.PI * 2;
+  return ((((y + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
+}
+
+/**
+ * 轨道相机:脑空间坐标 → 相机空间。
+ * 先绕 Y 轴偏航,再绕 X 轴俯仰。返回 { x, y, z },x/y 以脑中心为原点。
+ */
+export function orbitPoint(u, v, z, yaw, pitch) {
+  const x = u - 0.5;
+  const y = v - BRAIN_ASPECT / 2;
+  const cy = Math.cos(yaw);
+  const sy = Math.sin(yaw);
+  const x1 = x * cy + z * sy;
+  const z1 = -x * sy + z * cy;
+  const cp = Math.cos(pitch);
+  const sp = Math.sin(pitch);
+  return { x: x1, y: y * cp - z1 * sp, z: y * sp + z1 * cp };
+}
+
+/** 透视除法:近大远小。dist 越小越戏剧化。 */
+export function perspective(z, dist) {
+  return dist / Math.max(0.15, dist - z);
+}
+

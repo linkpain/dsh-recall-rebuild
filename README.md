@@ -162,6 +162,11 @@ flowchart LR
 | `sea.maxNodes` | `1200` | 识海最多渲染多少个节点(超出时**丢最老的**);900 以内 Canvas 2D 稳定 60fps |
 | `sea.source` | `raw` | 面板默认数据源:`raw` = 底层记忆库(开箱即见),`consolidated` = 睡眠巩固后的稳定条目(空库时是空态);面板右上角可随时切换 |
 | `sea.rawLinkThreshold` | `0.12` | 原始层连边阈值:两条记忆的字符 n-gram 余弦相似度超过它才连线(越低线越密,`0` 附近会连成毛球) |
+| `sea.view` | `2d` | 面板默认视角:`2d` = 正面脑图(默认), `3d` = 可 360° 拖动的立体点云。用户在面板里切过之后以本地记忆为准 |
+| `sea.depth` | `0.6` | 3D 模式下的脑「厚度」(厚/宽比,0.3–0.9):0.42 扁平、0.60 接近真实比例、0.85 偏厚 |
+| `sea.perspective` | `soft` | 3D 透视强度:`soft` = 温和(近似正交,形状稳)、`strong` = 强烈(近大远小明显,更有纵深) |
+| `sea.fissure` | `true` | 3D 模式下是否留出**纵向裂**(左右半球之间的缝),`false` 时点会连成实心椭球 |
+| `sea.autoRotate` | `false` | 3D 模式闲置时是否缓慢自转(≈6°/s);默认静置,拖过才动 |
 
 
 ## 支持的记忆源
@@ -231,7 +236,11 @@ flowchart LR
 
 ![记忆识海：把记忆画成一片深空点云](https://raw.githubusercontent.com/linkpain/dsh-recall-rebuild/main/docs/images/memory-sea.png)
 
-> 真机截图：301 条记忆、698 条联想，左下角是各记忆源的条数分布，右上角可切「巩固记忆 / 原始记忆」，底部时间轴能回放这颗大脑是怎么长出来的。
+> 真机截图(2D)：301 条记忆、698 条联想，左下角是各记忆源的条数分布，右上角可切「巩固记忆 / 原始记忆」，底部时间轴能回放这颗大脑是怎么长出来的。
+
+![记忆识海 3D：同一批点沿纵深撑开成球状点云](https://raw.githubusercontent.com/linkpain/dsh-recall-rebuild/main/docs/images/memory-sea-3d.png)
+
+> 同一份数据的 3D 模式：点是记忆、线是联想，按深度做亮度与尺寸衰减，所以近处的点亮、远处的点淡，转动时能看出体积。标题右侧的 `[2D|3D]` 就是切换开关。
 
 **两个数据源,右上角一键切**:
 
@@ -245,9 +254,10 @@ flowchart LR
 - **点是记忆,线是联想**:五类记忆各有配色(稳定事实 / 行为模式 / 偏好 / 关系 / 情绪),线的亮暗就是联想强度(按 30 天半衰期衰减);
 - **越用越像大脑**:节点少时是零星星点,几百条之后边缘因为密度自然形成亮的皮层带、内部保持通透——形状是**点自己长出来的**,不画任何 3D 网格;
 - **零记忆时留一个很淡的虚线框架**,像一张还没开始填的蓝图;到 140 条左右框架完全消失,此时点云已经足够定义形状;
-- **可以问它**:搜索框按内容过滤,悬停看记忆卡片,底部时间轴能回放「这颗大脑是怎么长出来的」。
+- **可以问它**:搜索框按内容过滤,悬停看记忆卡片,底部时间轴能回放「这颗大脑是怎么长出来的」;
+- **2D / 3D 一键切**(标题右侧):2D 是上面那颗正面的脑,一眼看清形状与分布;3D 把同一批点沿纵深撑开成一颗真的球状点云,按住拖动可 **360° 转**,滚轮缩放,双击回正。两种模式共享同一套几何与配色,切过去点会**平滑地飞进纵深**(500ms),不是硬切。上次用的模式与相机角度会记住,下次打开还是那个视角。
 
-技术上刻意做到**零依赖、零构建**:Canvas 2D + 三个 ES 模块,900 条以内稳定 60fps。面板是一个同源 iframe,指向宿主注册的 `/recall-rebuild/sea/`;宿主侧只做静态文件与一个 JSON 数据端点,带完整的信任 fence(只认本机回环 / 部署声明的可信域,拒绝跨站),整层只读。
+技术上刻意做到**零依赖、零构建**:Canvas 2D + 四个 ES 模块,900 条以内稳定 60fps(3D 模式下按帧耗时自动降级:先减边、再只画点)。面板是一个同源 iframe,指向宿主注册的 `/recall-rebuild/sea/`;宿主侧只做静态文件与一个 JSON 数据端点,带完整的信任 fence(只认本机回环 / 部署声明的可信域,拒绝跨站),整层只读。
 
 > 装插件后需要**完全退出并重开 DSH 桌面端**面板才会出现(客户端 bundle 在启动时装配)。设计取舍与实现细节见 [docs/memory-sea-brain.md](docs/memory-sea-brain.md)。
 
@@ -376,9 +386,11 @@ This plugin upgrades the **recall/presentation layer**:
 - **Sleep consolidation + associative spreading (long-term memory layer)**: while idle, accumulated fragments are clustered (local 2-gram similarity), LLM-distilled into stable memories (`stable-fact`/`pattern`/`preference`/`relationship`/`mood`), linked in a spreading-activation graph, and low-confidence long-unused entries decay to `dormant` (recall down-weighting, never deleted, never written to the base store) — and that forgetting is **reversible**: a dormant entry wakes up again when later recall fragments are similar enough to it (`consolidate.reviveSimilarity`), when it gets hit, or when you `edit` it, and every hit nudges its confidence up so frequently-used memories climb back out on their own. Consolidated entries are recalled first, get more stable the more they are hit, and strong links make related topics surface too — closer to how the brain consolidates daytime experience overnight. Link weights decay with a 30-day half-life and spreading goes two hops (a strong link's strong link still surfaces, at lower priority). When you change your mind ("I live in Hangzhou" → "I live in Chengdu") the new entry **supersedes** the old one — judged by character-subsequence ratio, so a one-slot change is caught where bag-of-words similarity would dilute it; superseded entries are never injected and never woken, though editing one still overrides that. Seeing the same thing again (nearly verbatim, `consolidate.reinforceThreshold`) does not create a near-duplicate: it raises the existing entry's confidence by 0.1 — more than a recall hit's 0.05, because hearing it from you again beats the retriever matching it again. Confidence is therefore dynamic: creation only sets the starting point. Everything lives under `<DSH_HOME>/recall-rebuild/consolidated/`;
 - **Manage your long-term memories with slash commands**: `/recall-rebuild list [--all]` (view consolidated memories with type/confidence/hit count), `now` (trigger a consolidation immediately), `edit <id> <text>` (fix a misremembered entry) and `forget <id>` (explicitly delete an entry and its links). The command view follows the same per-user isolation rules; it silently skips registration when the host has no command service;
 - **Zero infra cost**: no GPU/VM — rebuild calls go through the host's existing LLM routing, ~hundreds of tokens per hit; uses only Node's built-in `node:sqlite`.
-- **Memory Sea visualization**: a sidebar panel projects your memories as a deep-space point cloud — dots are memories, lines are associations; the more nodes, the denser the rim, and after a few hundred it grows into the shape of a brain on its own (with a faint dotted scaffold while empty). Two switchable sources: **raw** (draws the underlying store directly — something to look at right after install, edges computed on the fly from character n-gram similarity) and **consolidated** (the stable entries produced by sleep consolidation, five colour-coded types, decayed association edges). Zero-dependency Canvas 2D, steady 60fps up to ~900 nodes, strictly read-only.
+- **Memory Sea visualization**: a sidebar panel projects your memories as a deep-space point cloud — dots are memories, lines are associations; the more nodes, the denser the rim, and after a few hundred it grows into the shape of a brain on its own (with a faint dotted scaffold while empty). Two switchable sources: **raw** (draws the underlying store directly — something to look at right after install, edges computed on the fly from character n-gram similarity) and **consolidated** (the stable entries produced by sleep consolidation, five colour-coded types, decayed association edges). Two view modes from the toggle next to the title: **2D** (the front-on brain above — easiest to read shape and distribution) and **3D** (the same points pulled apart along depth into a true volumetric cloud; drag to orbit 360°, scroll to zoom, double-click to reset). Both share one geometry and palette, and switching makes the points **fly into depth** over 500ms instead of hard-cutting. The last mode and camera angle are remembered. Zero-dependency Canvas 2D, steady 60fps up to ~900 nodes (3D degrades gracefully by frame time: first fewer edges, then points only), strictly read-only.
 
 ![Memory Sea: memories as a deep-space point cloud](https://raw.githubusercontent.com/linkpain/dsh-recall-rebuild/main/docs/images/memory-sea.png)
+
+![Memory Sea 3D: the same points spread along depth into a volumetric cloud](https://raw.githubusercontent.com/linkpain/dsh-recall-rebuild/main/docs/images/memory-sea-3d.png)
 
 **Who it's for**: DSH desktop-pet / virtual-character / companion users who want the bot to "remember like a person" rather than "quote a file", including characters bridged to QQ/WeChat.
 

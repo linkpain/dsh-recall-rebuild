@@ -79,6 +79,16 @@ export interface SeaWebOptions {
     source: 'consolidated' | 'raw';
     /** 原始层连边阈值(字符 n-gram 余弦);越小线越密。 */
     rawLinkThreshold: number;
+    /** 首次打开的视图(面板只在用户没手动切过时跟随)。 */
+    view?: '2d' | '3d';
+    /** 3D 厚度比。 */
+    depth?: number;
+    /** 3D 闲置自转。 */
+    autoRotate?: boolean;
+    /** 3D 透视强度。 */
+    perspective?: 'soft' | 'strong';
+    /** 3D 纵向裂。 */
+    fissure?: boolean;
     logger: LoggerLike;
 }
 /**

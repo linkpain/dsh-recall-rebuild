@@ -144,6 +144,11 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
     maxNodes: config.sea.maxNodes,
     source: config.sea.source,
     rawLinkThreshold: config.sea.rawLinkThreshold,
+    view: config.sea.view,
+    depth: config.sea.depth,
+    autoRotate: config.sea.autoRotate,
+    perspective: config.sea.perspective,
+    fissure: config.sea.fissure,
     logger,
   });
 
