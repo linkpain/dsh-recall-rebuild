@@ -347,6 +347,30 @@ ctx.slots.inject('sidebar.panellist', function () { panelListReady = true; syncE
 
 这个顺序 bug 在真机上几乎不会暴露(两个槽位通常同时就绪),但一旦宿主调整装配顺序,表现是「图标在、点开空白」——比直接不显示更难查。`scripts/verify-sea.mjs` 用两个可手动触发的 deferred 回调把它钉住了:先触发 panellist 断言**没有**抢先注册,再触发 main 断言最终顺序是 `main,sidebar.panellist`。
 
+### 模块级 `inject` 只能写硬依赖(v0.1.18 修的坑)
+
+插件导出的 `inject` 数组是**硬依赖清单**,不是"可选依赖"的语法糖。cordis 的 `Inject.resolve()`(`cordis/lib/index.js:1490-1497`)对数组只做 `result[name] = null`,**原样把每个字符串当服务名**;随后 `Fiber` 构造里逐个 `_checkImpl(name)`,缺一个就停在 `PENDING`,整个 `apply()` 永远不执行。
+
+v0.1.17 写了 `export const inject = ['llm', 'commands?']`,本意是"有 commands 就注册斜杠命令,没有就算了"。实际后果是插件行永远等一个叫 `commands?` 的服务,于是:
+
+- 客户端 bundle 照常加载 → 侧边栏「记忆识海」图标**在**;
+- 宿主侧 `apply()` 从未执行 → `mountSeaWeb` 没跑 → `/recall-rebuild/sea/` 返回宿主裸 **404**(不是 fence 的 403);
+- iframe 加载 404 → 面板全白。
+
+可选依赖的正确写法是**在 `apply` 里动态等待**:
+
+```ts
+export const inject = ['llm'];                    // 只留真正的硬依赖
+
+ctx.inject(['commands'], (cctx) => {              // 服务缺席时回调不触发,静默跳过
+  registerRecallRebuildCommands(cctx, store, consolidated, config, logger);
+});
+```
+
+`mountSeaWeb` 里 `host.inject(['webServer', name], ...)` 一直是这个形状,只有 commands 写错了。`scripts/verify.mjs` 现在有一条回归断言:inject 数组里**不许出现任何带 `?` 的项**。
+
+**诊断经验**:遇到"插件图标在、面板空白",先看路由返回的是 **404 还是 403** —— 403 是 fence 拦住了(配置/来源问题),404 是路由压根没挂(插件没加载)。再用"apply 里的无条件副作用"当探针(这里是 `namespaces.ensureDir()` 建的 `~/.dsh/recall-rebuild`),目录不存在即证明 `apply()` 没跑。
+
 ### 为什么面板用 iframe 而不是搬进 React
 
 渲染器是三个零依赖 ES 模块(`sea-core.js` 纯几何 / `sea-view.js` 渲染循环 / `sea-app.js` 交互),直接当 `<script type="module">` 加载最省事。搬进 React 意味着要接宿主的构建管线、处理 React 版本、把 Canvas 生命周期塞进 hooks——收益为零,风险全在版本兼容上。iframe 的代价只是多一层文档边界,而这个面板本来就不需要和宿主通信(数据走 HTTP,不 postMessage)。

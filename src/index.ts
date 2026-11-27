@@ -24,7 +24,10 @@ import { mountSeaWeb } from './web.js';
 export { DIFFUSE_OPTS } from './recall.js';
 
 export const name = 'recall-rebuild';
-export const inject = ['llm', 'commands?'];
+// 只声明真正的硬依赖。可选服务(commands / webServer)一律用 ctx.inject([...])
+// 在 apply 里动态挂载:inject 数组里的名字会被 cordis 当成服务名逐个等待,
+// 写成 'commands?' 不会变成可选,只会让插件永远停在 PENDING。
+export const inject = ['llm'];
 export const Config = recallRebuildSchema;
 
 /**
@@ -125,10 +128,14 @@ export async function apply(ctx: Context, config: RecallRebuildConfig): Promise<
 
   registerRecallRebuild(ctx, store, config, logger, namespaces, obsLog, consolidated);
 
-  // 巩固层交互命令(可选依赖:宿主无 commands 服务时静默跳过,不影响插件主体)
-  registerRecallRebuildCommands(ctx, store, consolidated, config, logger, () =>
-    describeSources({ dataDir, cwd, logger, refreshMs: config.sourceRefreshMs }),
-  );
+  // 巩固层交互命令(可选依赖:宿主无 commands 服务时静默跳过,不影响插件主体)。
+  // 用 ctx.inject 动态等待,而不是写进模块级 inject —— 后者是硬依赖,缺服务会让
+  // 整个插件停在 PENDING,连记忆注入与识海都一起不生效。
+  ctx.inject(['commands'], (cctx) => {
+    registerRecallRebuildCommands(cctx, store, consolidated, config, logger, () =>
+      describeSources({ dataDir, cwd, logger, refreshMs: config.sourceRefreshMs }),
+    );
+  });
 
   // 记忆识海可视化(可选):把巩固层投影成星云图挂在 Web GUI 里。
   // webServer 不存在时(纯对话部署)什么都不做,不影响插件主体。

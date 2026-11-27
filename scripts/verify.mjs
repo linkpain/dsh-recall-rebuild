@@ -28,6 +28,15 @@ console.log('[1] 插件模块导出');
 const plugin = await import(`${distUrl}index.js`);
 check('name = recall-rebuild', plugin.name === 'recall-rebuild', `got ${plugin.name}`);
 check('inject 包含 llm', Array.isArray(plugin.inject) && plugin.inject.includes('llm'));
+// 回归:v0.1.17 把 'commands?' 写进 inject,想表达"可选依赖",但 cordis 把数组元素
+// 原样当服务名等待(Inject.resolve 只做 result[name]=null),插件因此永远 PENDING、
+// apply() 从不执行 —— 真机上表现为侧边栏图标在、面板 404。可选依赖必须用
+// ctx.inject([...]) 动态挂载,模块级 inject 里不许出现 '?' 后缀。
+check(
+  'inject 里没有伪可选标记(?)',
+  Array.isArray(plugin.inject) && plugin.inject.every((n) => typeof n === 'string' && !n.includes('?')),
+  JSON.stringify(plugin.inject),
+);
 check('Config 是可调用 Schema', typeof plugin.Config === 'function');
 check('apply 是函数', typeof plugin.apply === 'function');
 
