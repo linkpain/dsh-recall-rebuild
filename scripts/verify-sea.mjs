@@ -277,8 +277,22 @@ const view3dSrc = readFileSync(path.join(root, 'ui', 'sea-view3d.js'), 'utf8');
 check('sea-view3d 导出 SeaView3D', /export class SeaView3D/.test(view3dSrc));
 check('3D 渲染器有相机接口', /setCamera\(/.test(view3dSrc) && /resetCamera\(/.test(view3dSrc));
 
+console.log('\n[8] 3D 参数面板');
+check('有参数开关按钮', html.includes('id="optToggle"'));
+check('有参数浮层', html.includes('id="opts"'));
+check('厚度三档 0.42/0.60/0.85',
+  ['0.42', '0.6', '0.85'].every((v) => html.includes(`data-val="${v}"`)));
+check('自转开关有 开/关', html.includes('data-val="on"') && html.includes('data-val="off"'));
+check('透视有 温和/强烈', html.includes('data-val="soft"') && html.includes('data-val="strong"'));
+check('浮层默认收起', /\.opts \{[^}]*display: none/.test(html));
+check('参数键是 sea.opts3d', appSrc.includes("'sea.opts3d'"));
+check('app 调 setDepth/setAutoRotate', /setDepth\(/.test(appSrc) && /setAutoRotate\(/.test(appSrc));
+check('透视映射到视距', /PERSP_DIST/.test(appSrc) && /strong:\s*1\.8/.test(appSrc));
+check('URL 支持 ?depth=', appSrc.includes("has('depth')"));
+check('拖动会关掉自转并落盘', /view3d\.autoRotate !== opts\.autoRotate/.test(appSrc));
 
-console.log('\n[8] 包清单');
+
+console.log('\n[9] 包清单');
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 check('exports 暴露 ./client', pkg.exports['./client'] === './lib/client.js');
 check('dsh.client.platform = web', pkg.dsh?.client?.platform === 'web');

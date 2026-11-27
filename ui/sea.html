@@ -32,6 +32,23 @@
     border-radius: 5px; font-size: 10.5px; padding: 3px 8px; cursor: pointer; display: none; }
   .mode .reset:hover { border-color: rgba(160,200,245,0.5); color: #e2f0ff; }
   body.mode-3d .mode .reset { display: inline-block; }
+  .mode .gear { background: none; border: 1px solid rgba(120,160,210,0.25); color: #a9c2dd;
+    border-radius: 5px; font-size: 10.5px; padding: 3px 7px; cursor: pointer; display: none;
+    line-height: 1.2; }
+  .mode .gear:hover, .mode .gear.on { border-color: rgba(160,200,245,0.5); color: #e2f0ff; }
+  body.mode-3d .mode .gear { display: inline-block; }
+  /* 3D 参数浮层:挂在模式按钮下方,只在 3D 模式出现(2D 没有厚度/透视可言)。 */
+  .opts { top: 44px; left: 118px; pointer-events: auto; display: none; flex-direction: column;
+    gap: 7px; padding: 10px 12px; border-radius: 8px; background: rgba(11,18,31,0.94);
+    border: 1px solid rgba(120,160,210,0.24); box-shadow: 0 12px 34px rgba(0,0,0,0.6); }
+  .opts.on { display: flex; }
+  .opts .row { display: flex; align-items: center; gap: 9px; font-size: 10.5px; }
+  .opts .row > b { font-weight: 400; width: 52px; color: #93aac7; letter-spacing: 0.04em; }
+  .opts .seg { display: flex; border: 1px solid rgba(120,160,210,0.22); border-radius: 5px; overflow: hidden; }
+  .opts .seg button { background: rgba(14,22,38,0.72); border: 0; color: #7d93b3; font-size: 10px;
+    padding: 3px 8px; cursor: pointer; letter-spacing: 0.03em; transition: color .16s, background .16s; }
+  .opts .seg button:hover { color: #cfe0f5; }
+  .opts .seg button.on { background: rgba(90,140,200,0.28); color: #eaf3ff; }
   .search { top: 18px; right: 24px; pointer-events: auto; }
   .search input { width: 190px; padding: 7px 11px; font-size: 12px; color: #dceaff;
     background: rgba(14,22,38,0.72); border: 1px solid rgba(120,160,210,0.22);
@@ -67,6 +84,7 @@
     .title h1 { font-size: 13.5px; }
     .title p { font-size: 10.5px; margin-top: 4px; }
     .mode { top: 10px; left: auto; right: 14px; }
+    .opts { top: 42px; left: auto; right: 14px; }
     .switch { top: 52px; left: 14px; transform: none; }
     .search { top: 46px; right: 14px; }
     .search input { width: 132px; padding: 5px 9px; font-size: 11px; }
@@ -87,6 +105,22 @@
     <button type="button" data-view="3d">3D</button>
   </div>
   <button type="button" class="reset" id="resetView">回正</button>
+  <button type="button" class="gear" id="optToggle" title="3D 参数" aria-label="3D 参数">⚙</button>
+</div>
+<div class="hud opts" id="opts">
+  <div class="row"><b>大脑厚度</b><div class="seg" data-opt="depth">
+    <button type="button" data-val="0.42">0.42</button>
+    <button type="button" data-val="0.6">0.60</button>
+    <button type="button" data-val="0.85">0.85</button>
+  </div></div>
+  <div class="row"><b>闲置自转</b><div class="seg" data-opt="rotate">
+    <button type="button" data-val="off">关</button>
+    <button type="button" data-val="on">开</button>
+  </div></div>
+  <div class="row"><b>透视强度</b><div class="seg" data-opt="persp">
+    <button type="button" data-val="soft">温和</button>
+    <button type="button" data-val="strong">强烈</button>
+  </div></div>
 </div>
 <div class="hud switch" id="switch">
   <button type="button" data-source="consolidated">巩固记忆</button>

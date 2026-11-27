@@ -20,6 +20,8 @@ const playEl = document.getElementById('play');
 const switchEl = document.getElementById('switch');
 const modeEl = document.getElementById('mode');
 const resetEl = document.getElementById('resetView');
+const optToggleEl = document.getElementById('optToggle');
+const optsEl = document.getElementById('opts');
 const emptyTitleEl = document.getElementById('emptyTitle');
 const emptyBodyEl = document.getElementById('emptyBody');
 
@@ -31,7 +33,12 @@ const EMPTY_TEXT = {
 
 const MODE_KEY = 'sea.mode';
 const CAM_KEY = 'sea.cam3d';
+/** 3D 造型参数和相机分开存:相机是「从哪看」,这三项是「长什么样」。 */
+const OPT_KEY = 'sea.opts3d';
 const FADE_MS = 240;
+/** 透视强度在实现上就是视距:远 = 温和(近似正交),近 = 强烈。 */
+const PERSP_DIST = { soft: 5.0, strong: 1.8 };
+const OPT_DEFAULT = { depth: 0.6, autoRotate: false, perspective: 'soft' };
 
 // 首屏不指定 source,由服务端默认值决定(配置里改默认,面板自动跟随);
 // 用户点了切换按钮之后才显式带上 ?source=。
@@ -41,6 +48,10 @@ let source = null;
 
 let mode = '2d';
 let selectedId = null;
+let opts = { ...OPT_DEFAULT };
+/** 用户手动改过参数(存过 / URL 指定过)→ 配置里的默认值不再覆盖。 */
+let optsTouched = false;
+let optsOpen = false;
 let morphRaf = 0;
 let fadeTimer = 0;
 
@@ -105,12 +116,64 @@ function writeJSON(key, value) {
 function saveCamera(cam) {
   if (!cam) return;
   writeJSON(CAM_KEY, { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist });
+  // 渲染器会因为「用户一拖动」自行关掉自转;以它为准,否则刷新后开关和画面不一致。
+  if (view3d.autoRotate !== opts.autoRotate) {
+    opts.autoRotate = view3d.autoRotate;
+    writeJSON(OPT_KEY, opts);
+    paintOpts();
+  }
 }
 
 function paintMode() {
   document.body.classList.toggle('mode-3d', mode === '3d');
   for (const btn of modeEl.querySelectorAll('button[data-view]')) {
     btn.classList.toggle('on', btn.dataset.view === mode);
+  }
+  paintOpts();
+}
+
+/* ───────────────────────── 3D 造型参数 ───────────────────────── */
+
+function clampDepth(d) {
+  return Math.max(0.3, Math.min(0.9, d));
+}
+
+function storedOpts() {
+  const v = readJSON(OPT_KEY);
+  if (!v || typeof v !== 'object') return null;
+  const out = {};
+  if (Number.isFinite(v.depth)) out.depth = clampDepth(v.depth);
+  if (typeof v.autoRotate === 'boolean') out.autoRotate = v.autoRotate;
+  if (v.perspective === 'soft' || v.perspective === 'strong') out.perspective = v.perspective;
+  return Object.keys(out).length ? out : null;
+}
+
+function paintOpts() {
+  const visible = optsOpen && mode === '3d';
+  optsEl.classList.toggle('on', visible);
+  optToggleEl.classList.toggle('on', visible);
+  for (const btn of optsEl.querySelectorAll('button[data-val]')) {
+    const group = btn.closest('.seg')?.dataset.opt;
+    let on = false;
+    if (group === 'depth') on = Math.abs(Number(btn.dataset.val) - opts.depth) < 0.001;
+    else if (group === 'rotate') on = (btn.dataset.val === 'on') === opts.autoRotate;
+    else if (group === 'persp') on = btn.dataset.val === opts.perspective;
+    btn.classList.toggle('on', on);
+  }
+}
+
+/**
+ * 把参数落到渲染器上。
+ * zoom 默认不动视距:用户可能自己滚轮调过,改厚度不该把视角拉回默认。
+ */
+function applyOpts({ persist = true, zoom = false } = {}) {
+  view3d.setDepth(opts.depth);
+  view3d.setAutoRotate(opts.autoRotate);
+  if (zoom) view3d.setZoom(PERSP_DIST[opts.perspective] ?? PERSP_DIST.soft);
+  paintOpts();
+  if (persist) {
+    writeJSON(OPT_KEY, opts);
+    optsTouched = true;
   }
 }
 
@@ -199,6 +262,25 @@ modeEl.addEventListener('click', (ev) => {
 resetEl.addEventListener('click', () => {
   view3d.resetCamera();
   saveCamera(view3d.cameraState());
+});
+
+optToggleEl.addEventListener('click', () => {
+  optsOpen = !optsOpen;
+  paintOpts();
+});
+
+optsEl.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-val]');
+  if (!btn) return;
+  const group = btn.closest('.seg')?.dataset.opt;
+  const val = btn.dataset.val;
+  if (group === 'depth') opts.depth = clampDepth(Number(val));
+  else if (group === 'rotate') opts.autoRotate = val === 'on';
+  else if (group === 'persp') {
+    opts.perspective = val === 'strong' ? 'strong' : 'soft';
+    view3d.setZoom(PERSP_DIST[opts.perspective]);
+  } else return;
+  applyOpts();
 });
 
 /* ───────────────────────── 数据 ───────────────────────── */
@@ -324,12 +406,14 @@ async function load() {
   if (!storedMode() && !qsp.get('view') && (m.view === '2d' || m.view === '3d')) {
     setMode(m.view, { persist: false });
   }
-  if (!camTouched) {
-    if (Number.isFinite(m.depth)) view3d.setDepth(Math.max(0.1, Math.min(1.2, m.depth)));
-    if (typeof m.fissure === 'boolean') view3d.setFissure(m.fissure);
-    if (Number.isFinite(m.autoRotate) || typeof m.autoRotate === 'boolean') view3d.setAutoRotate(!!m.autoRotate);
-    if (m.perspective === 'strong') view3d.setZoom(1.8);
-    else if (m.perspective === 'soft') view3d.setZoom(5.0);
+  if (typeof m.fissure === 'boolean') view3d.setFissure(m.fissure);
+  if (!optsTouched) {
+    if (Number.isFinite(m.depth)) opts.depth = clampDepth(m.depth);
+    if (typeof m.autoRotate === 'boolean') opts.autoRotate = m.autoRotate;
+    if (m.perspective === 'soft' || m.perspective === 'strong') opts.perspective = m.perspective;
+    applyOpts({ persist: false, zoom: !camTouched });
+  } else {
+    paintOpts();
   }
   const [title, body] = EMPTY_TEXT[source] ?? EMPTY_TEXT.consolidated;
   emptyTitleEl.textContent = title;
@@ -433,7 +517,27 @@ if (qs.has('yaw') && Number.isFinite(qYaw)) {
   view3d.setCamera(qYaw * DEG, (qs.has('pitch') && Number.isFinite(qPitch) ? qPitch : view3d.pitch / DEG) * DEG);
 }
 if (Number.isFinite(qDist) && qs.has('dist')) view3d.setZoom(qDist);
-if (Number.isFinite(qDepth) && qs.has('depth')) view3d.setDepth(Math.max(0.1, Math.min(1.2, qDepth)));
+// 造型参数:存的 < URL 显式指定的;两者都没有时,交给 load() 里的配置默认值。
+const savedOpts = storedOpts();
+if (savedOpts) {
+  Object.assign(opts, savedOpts);
+  optsTouched = true;
+}
+if (Number.isFinite(qDepth) && qs.has('depth')) {
+  opts.depth = clampDepth(qDepth);
+  optsTouched = true;
+}
+const qRotate = qs.get('rotate');
+if (qRotate === 'on' || qRotate === 'off') {
+  opts.autoRotate = qRotate === 'on';
+  optsTouched = true;
+}
+const qPersp = qs.get('persp');
+if (qPersp === 'soft' || qPersp === 'strong') {
+  opts.perspective = qPersp;
+  optsTouched = true;
+}
+applyOpts({ persist: false, zoom: optsTouched && !camTouched });
 
 setMode(qView === '2d' || qView === '3d' ? qView : storedMode() ?? '2d', { persist: false });
 if (mode === '3d') {
