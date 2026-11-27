@@ -328,6 +328,25 @@
 - **数据端点**:`GET /recall-rebuild/sea/data` 返回 `{ nodes, links, meta }`。渲染器用 `fetch('./data')` 取——相对路径正好落到这里,页面不需要知道自己被挂在哪个前缀下。
 - **客户端 bundle**(`lib/client.js`):固定形状 `window.__ModuleLoader__.load({ id, factory })`,只注册两个槽位:`main`(`key = 'recall-rebuild-sea'`)与 `sidebar.panellist`(`id` 必须与 main 的 `key` 相同,否则点了没反应)。面板本体就是一个 `<iframe sandbox="allow-scripts allow-same-origin">`,把 Canvas 渲染器当普通网页跑——不和宿主的 React 版本、构建产物打架。
 
+### 槽位注册顺序:侧边栏行必须等 main 就绪
+
+两个槽位的 `inject` 回调谁先触发**不确定**,而宿主对「侧边栏行存在但主面板没注册」的容忍度是零——点了会选不中。`dsh-mcp-connector`(`lib/client.js:3096`)为此写了两个就绪标志 + 一个 `syncEntries()`,这里照抄同样的形状(v0.1.17 修的就是这个):
+
+```js
+var mainReady = false, panelListReady = false, entryDispose = null;
+var syncEntry = function () {
+  if (mainReady && panelListReady && entryDispose === null) {
+    entryDispose = ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 30, label: '记忆识海' }, SeaIcon);
+  } else if (!(mainReady && panelListReady) && entryDispose !== null) {
+    entryDispose(); entryDispose = null;   // 任一槽位卸载,行也跟着撤
+  }
+};
+ctx.slots.inject('main', function () { var d = ctx.slots.register({ name: 'main', key: PANEL_ID }, SeaPanel); mainReady = true; syncEntry(); return function () { mainReady = false; syncEntry(); d(); }; });
+ctx.slots.inject('sidebar.panellist', function () { panelListReady = true; syncEntry(); return function () { panelListReady = false; syncEntry(); }; });
+```
+
+这个顺序 bug 在真机上几乎不会暴露(两个槽位通常同时就绪),但一旦宿主调整装配顺序,表现是「图标在、点开空白」——比直接不显示更难查。`scripts/verify-sea.mjs` 用两个可手动触发的 deferred 回调把它钉住了:先触发 panellist 断言**没有**抢先注册,再触发 main 断言最终顺序是 `main,sidebar.panellist`。
+
 ### 为什么面板用 iframe 而不是搬进 React
 
 渲染器是三个零依赖 ES 模块(`sea-core.js` 纯几何 / `sea-view.js` 渲染循环 / `sea-app.js` 交互),直接当 `<script type="module">` 加载最省事。搬进 React 意味着要接宿主的构建管线、处理 React 版本、把 Canvas 生命周期塞进 hooks——收益为零,风险全在版本兼容上。iframe 的代价只是多一层文档边界,而这个面板本来就不需要和宿主通信(数据走 HTTP,不 postMessage)。
@@ -371,7 +390,7 @@ sea:
 
 ### 验证
 
-- 纯函数 + 真实 HTTP 往返:`node scripts/verify-sea.mjs`(35 项断言全过);
+- 纯函数 + 真实 HTTP 往返:`node scripts/verify-sea.mjs`(53 项断言全过:投影规则、九条信任 fence、越界路径拒绝、真实 HTTP 往返、客户端 bundle 形状与槽位注册顺序、包清单);
 - 视觉:开发期用 `python -m http.server` 起 `ui/`,打开 `dev-harness.html?n=420` 生成假数据;联调期用 `scripts/serve-sea-demo.mjs <port> <n>` 起一个带真实形状的 demo 服务;
 - 四档密度(0 / 80 / 450 / 900)截图见 `.refs/`,零记忆时是极淡虚线轮廓 + 空态提示,900 条时皮层带致密、内部通透。
 
