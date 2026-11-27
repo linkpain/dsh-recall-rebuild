@@ -1,6 +1,6 @@
 {
   "name": "dsh-recall-rebuild",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public",
@@ -15,15 +15,25 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     }
   },
   "files": [
     "dist",
+    "lib",
+    "ui",
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md",
@@ -59,11 +69,27 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "*",
+    "@deepseek-ai/dsh-client-ui-layout": "*",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "@deepseek-ai/dsh-home-paths": ">=0.1.0-rc.2 <0.3.0-0",
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.2 <0.3.0-0",
     "@deepseek-ai/schemastery": "^3.18.4"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-layout": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-home-paths": {
       "optional": true
     },

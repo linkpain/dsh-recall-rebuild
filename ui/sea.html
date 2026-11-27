@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>记忆识海</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #05070d; overflow: hidden;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #sea { display: block; width: 100%; height: 100%; }
+  .hud { position: absolute; pointer-events: none; color: #cfe0f5; }
+  .title { top: 20px; left: 24px; }
+  .title h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.14em; color: #e6f1ff; }
+  .title p { margin: 6px 0 0; font-size: 11.5px; color: #6f86a6; letter-spacing: 0.04em; }
+  .search { top: 18px; right: 24px; pointer-events: auto; }
+  .search input { width: 190px; padding: 7px 11px; font-size: 12px; color: #dceaff;
+    background: rgba(14,22,38,0.72); border: 1px solid rgba(120,160,210,0.22);
+    border-radius: 7px; outline: none; transition: border-color .18s, width .18s; }
+  .search input:focus { border-color: rgba(150,195,245,0.5); width: 230px; }
+  .legend { bottom: 18px; left: 24px; display: flex; gap: 14px; font-size: 11px; color: #7d93b3; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .timeline { bottom: 16px; right: 24px; width: min(320px, 42vw); pointer-events: auto; }
+  .timeline .row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #7d93b3; }
+  .timeline input[type=range] { flex: 1; accent-color: #7fa8d8; height: 3px; }
+  .timeline button { background: none; border: 1px solid rgba(120,160,210,0.25); color: #a9c2dd;
+    border-radius: 5px; font-size: 10.5px; padding: 2px 7px; cursor: pointer; }
+  .timeline button:hover { border-color: rgba(160,200,245,0.5); color: #e2f0ff; }
+  .card { position: absolute; max-width: 300px; padding: 11px 13px; border-radius: 9px;
+    background: rgba(11,18,31,0.94); border: 1px solid rgba(120,160,210,0.24);
+    box-shadow: 0 12px 34px rgba(0,0,0,0.6); font-size: 12.5px; line-height: 1.55;
+    color: #d5e5f7; pointer-events: none; opacity: 0; transform: translateY(4px);
+    transition: opacity .14s, transform .14s; }
+  .card.on { opacity: 1; transform: translateY(0); }
+  .card .meta { margin-top: 7px; font-size: 10.5px; color: #6d84a4; display: flex; gap: 8px; flex-wrap: wrap; }
+  .card .type { color: #9fc0e4; }
+  /* [hidden] 的 UA 规则 (display:none) 优先级低于 .empty 的 display:grid,
+     不加这一条空态遮罩永远盖在画面上。 */
+  .empty[hidden] { display: none; }
+  .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
+    color: #5d7291; font-size: 13px; line-height: 2; pointer-events: none; }
+  .empty b { display: block; color: #8fa9c9; font-weight: 500; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<canvas id="sea"></canvas>
+<div class="hud title"><h1>记忆识海</h1><p id="sub">正在读取…</p></div>
+<div class="hud search"><input id="q" type="search" placeholder="搜索记忆…" autocomplete="off" /></div>
+<div class="hud legend" id="legend"></div>
+<div class="hud timeline">
+  <div class="row">
+    <button id="play" type="button">▶ 回放</button>
+    <input id="time" type="range" min="0" max="1000" value="1000" />
+    <span id="timeLabel">全部</span>
+  </div>
+</div>
+<div class="card" id="card"></div>
+<div class="empty" id="empty" hidden><b>还没有巩固记忆</b>聊天内容会先成为碎片,<br />夜间巩固后才会在这里点亮。</div>
+<script type="module" src="./sea-app.js"></script>
+</body>
+</html>

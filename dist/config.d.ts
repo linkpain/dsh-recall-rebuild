@@ -75,6 +75,13 @@ export interface ObservabilityOptions {
     /** 日志保留天数:更早的按天日志文件在写日志时顺手删除;0 = 永不删除。 */
     retainDays: number;
 }
+/** 记忆识海(可视化)选项。 */
+export interface SeaOptions {
+    /** 识海总开关;false = 不挂载 /recall-rebuild/sea/ 路由(纯对话部署本就不挂)。 */
+    enabled: boolean;
+    /** 单次投影最多画多少个节点;超出时丢最老的(识海要看得见最近在想什么)。 */
+    maxNodes: number;
+}
 /** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
 export interface CommandsOptions {
     /** 命令总开关;false = 不注册任何命令。 */
@@ -176,6 +183,7 @@ export interface RecallRebuildConfig {
     observability: ObservabilityOptions;
     consolidate: ConsolidateOptions;
     commands: CommandsOptions;
+    sea: SeaOptions;
 }
 export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
     enabled: Schema<boolean, boolean, "defined">;
@@ -283,6 +291,13 @@ export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
         name: Schema<string, string, "defined">;
     }>>, "defined">;
+    sea: Schema<Schemastery.ObjectS<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        maxNodes: Schema<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        maxNodes: Schema<number, number, "defined">;
+    }>>, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     enabled: Schema<boolean, boolean, "defined">;
     dataDir: Schema<string, string, "defined">;
@@ -388,5 +403,12 @@ export declare const recallRebuildSchema: Schema<Schemastery.ObjectS<NoInfer<{
     }>>, Schemastery.ObjectT<NoInfer<{
         enabled: Schema<boolean, boolean, "defined">;
         name: Schema<string, string, "defined">;
+    }>>, "defined">;
+    sea: Schema<Schemastery.ObjectS<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        maxNodes: Schema<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: Schema<boolean, boolean, "defined">;
+        maxNodes: Schema<number, number, "defined">;
     }>>, "defined">;
 }>>, "defined">;

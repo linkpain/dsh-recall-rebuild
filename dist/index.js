@@ -17,6 +17,7 @@ import { RebuildLogger } from './observability.js';
 import { ConsolidatedStore } from './consolidated.js';
 import { runConsolidation } from './consolidate.js';
 import { registerRecallRebuildCommands } from './commands.js';
+import { mountSeaWeb } from './web.js';
 export { DIFFUSE_OPTS } from './recall.js';
 export const name = 'recall-rebuild';
 export const inject = ['llm', 'commands?'];
@@ -84,6 +85,13 @@ export async function apply(ctx, config) {
     registerRecallRebuild(ctx, store, config, logger, namespaces, obsLog, consolidated);
     // 巩固层交互命令(可选依赖:宿主无 commands 服务时静默跳过,不影响插件主体)
     registerRecallRebuildCommands(ctx, store, consolidated, config, logger, () => describeSources({ dataDir, cwd, logger, refreshMs: config.sourceRefreshMs }));
+    // 记忆识海可视化(可选):把巩固层投影成星云图挂在 Web GUI 里。
+    // webServer 不存在时(纯对话部署)什么都不做,不影响插件主体。
+    mountSeaWeb(ctx, () => consolidated, {
+        enabled: config.sea.enabled,
+        maxNodes: config.sea.maxNodes,
+        logger,
+    });
     // 睡眠巩固调度:启动后空闲 10s 查一次,之后按 checkIntervalMs 定时查;
     // 触发条件由 shouldRun 判定(pending 达标 + 距上次巩固超间隔),真正执行时
     // 在空闲间隙异步跑,绝不阻塞对话;失败保留 pending 下次再试。

@@ -3,3 +3,13 @@ node_modules/
 npm-debug.log*
 *.tsbuildinfo
 .DS_Store
+
+# 本地一次性脚手架(asar 解包、出图脚本、临时构建实验),不进仓库
+.asar-*
+.amdtest/
+.preview/
+
+
+# 早期风格参考图(文档未引用,体积大,留本地)
+.refs/brain-free.png
+.refs/digital-brain.png

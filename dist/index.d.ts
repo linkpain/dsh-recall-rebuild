@@ -109,6 +109,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         name: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     }>>, "defined">;
+    sea: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
+        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        maxNodes: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        maxNodes: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+    }>>, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
     dataDir: import("@deepseek-ai/schemastery").default<string, string, "defined">;
@@ -214,6 +221,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
     }>>, Schemastery.ObjectT<NoInfer<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
         name: import("@deepseek-ai/schemastery").default<string, string, "defined">;
+    }>>, "defined">;
+    sea: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
+        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        maxNodes: import("@deepseek-ai/schemastery").default<number, number, "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean, "defined">;
+        maxNodes: import("@deepseek-ai/schemastery").default<number, number, "defined">;
     }>>, "defined">;
 }>>, "defined">;
 export declare function apply(ctx: Context, config: RecallRebuildConfig): Promise<void>;

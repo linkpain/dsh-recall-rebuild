@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8" /><title>sea harness</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}
+#sea{display:block;width:100%;height:100%}
+.card{position:absolute;max-width:300px;padding:11px 13px;border-radius:9px;background:rgba(11,18,31,.94);
+border:1px solid rgba(120,160,210,.24);color:#d5e5f7;font:12.5px/1.55 -apple-system,"Segoe UI",sans-serif;opacity:0}
+.card.on{opacity:1}</style></head>
+<body><canvas id="sea"></canvas><div class="card" id="card"></div>
+<script type="module">
+import { SeaView } from './sea-view.js';
+const view = new SeaView(document.getElementById('sea'), {
+  onHover: (n, x, y) => {
+    const c = document.getElementById('card');
+    if (!n) { c.classList.remove('on'); return; }
+    c.textContent = n.content ?? n.id;
+    c.style.left = (x + 16) + 'px'; c.style.top = (y + 16) + 'px';
+    c.classList.add('on');
+  },
+});
+const COUNT = Number(new URLSearchParams(location.search).get('n') ?? 450);
+const TYPES = ['stable-fact','pattern','preference','relationship','mood'];
+const nodes = Array.from({ length: COUNT }, (_, i) => ({
+  id: 'm' + i, type: TYPES[i % 5], content: '记忆条目 #' + i + ' 的内容预览',
+  confidence: 0.5 + (i % 50) / 100, status: 'active', createdAt: 1760000000000 + i * 3600000,
+}));
+const links = [];
+for (let i = 1; i < nodes.length; i += 1) links.push({ source: nodes[i].id, target: nodes[i - 1].id, weight: 0.5 });
+view.setData(nodes, links).start();
+</script></body></html>

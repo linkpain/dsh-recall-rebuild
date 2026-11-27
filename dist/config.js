@@ -66,4 +66,10 @@ export const recallRebuildSchema = Schema.object({
         enabled: Schema.boolean().default(true),
         name: Schema.string().default('recall-rebuild'),
     }).default({}),
+    // 900 条以内 Canvas 2D 仍能稳定 60fps(见 docs/memory-sea-brain.md 第十二节);
+    // 超过这个量级不是画不动,而是「一个屏上全是点」已经没有信息量。
+    sea: Schema.object({
+        enabled: Schema.boolean().default(true),
+        maxNodes: Schema.number().min(50).max(3000).default(1200),
+    }).default({}),
 }).default({});

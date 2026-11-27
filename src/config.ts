@@ -81,6 +81,14 @@ export interface ObservabilityOptions {
   retainDays: number;
 }
 
+/** 记忆识海(可视化)选项。 */
+export interface SeaOptions {
+  /** 识海总开关;false = 不挂载 /recall-rebuild/sea/ 路由(纯对话部署本就不挂)。 */
+  enabled: boolean;
+  /** 单次投影最多画多少个节点;超出时丢最老的(识海要看得见最近在想什么)。 */
+  maxNodes: number;
+}
+
 /** 巩固层交互命令选项(/recall-rebuild list | now | edit | forget)。 */
 export interface CommandsOptions {
   /** 命令总开关;false = 不注册任何命令。 */
@@ -184,6 +192,7 @@ export interface RecallRebuildConfig {
   observability: ObservabilityOptions;
   consolidate: ConsolidateOptions;
   commands: CommandsOptions;
+  sea: SeaOptions;
 }
 
 export const recallRebuildSchema = Schema.object({
@@ -245,5 +254,11 @@ export const recallRebuildSchema = Schema.object({
   commands: Schema.object({
     enabled: Schema.boolean().default(true),
     name: Schema.string().default('recall-rebuild'),
+  }).default({}),
+  // 900 条以内 Canvas 2D 仍能稳定 60fps(见 docs/memory-sea-brain.md 第十二节);
+  // 超过这个量级不是画不动,而是「一个屏上全是点」已经没有信息量。
+  sea: Schema.object({
+    enabled: Schema.boolean().default(true),
+    maxNodes: Schema.number().min(50).max(3000).default(1200),
   }).default({}),
 }).default({});
