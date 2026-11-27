@@ -13,7 +13,7 @@
  * 相机静止时每帧只做一次贴图 + bloom,CPU 接近 0。
  */
 import {
-  BRAIN_ASPECT, BRAIN_DEPTH, BRAIN_OUTLINE,
+  BRAIN_ASPECT, BRAIN_DEPTH, BRAIN_OUTLINE, FISSURE,
   brainRadius, clampPitch, nodeMetrics, orbitPoint, perspective, placeNode, placeNode3D, wrapYaw,
 } from './sea-core.js';
 import { TYPE_COLOR } from './sea-view.js';

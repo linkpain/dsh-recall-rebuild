@@ -277,6 +277,17 @@ const view3dSrc = readFileSync(path.join(root, 'ui', 'sea-view3d.js'), 'utf8');
 check('sea-view3d 导出 SeaView3D', /export class SeaView3D/.test(view3dSrc));
 check('3D 渲染器有相机接口', /setCamera\(/.test(view3dSrc) && /resetCamera\(/.test(view3dSrc));
 
+// 3D 渲染器用到 sea-core 的每个符号都必须真的 import 进来 —— 少一个就是运行期 ReferenceError,
+// 而静态检查、2D 截图、打包全都发现不了(它只在 3D 首次渲染那一刻炸)。
+const coreSrc = readFileSync(path.join(root, 'ui', 'sea-core.js'), 'utf8');
+const coreNames = [...coreSrc.matchAll(/export (?:const|function|class) ([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+const coreImportEnd = view3dSrc.indexOf("} from './sea-core.js'");
+const importedFromCore = new Set((coreImportEnd > 0 ? view3dSrc.slice(0, coreImportEnd) : '').match(/[A-Za-z_$][\w$]*/g) ?? []);
+const body3d = coreImportEnd > 0 ? view3dSrc.slice(coreImportEnd) : view3dSrc;
+const missingCore = coreNames.filter((n) => new RegExp('\\b' + n + '\\b').test(body3d) && !importedFromCore.has(n));
+check('sea-view3d 用到的 core 符号都已 import', coreImportEnd > 0 && missingCore.length === 0, missingCore.join(',') || 'ok');
+check('setFissure 用的是 core 的 FISSURE 常量', /FISSURE/.test(view3dSrc) && importedFromCore.has('FISSURE'));
+
 console.log('\n[8] 3D 参数面板');
 check('有参数开关按钮', html.includes('id="optToggle"'));
 check('有参数浮层', html.includes('id="opts"'));

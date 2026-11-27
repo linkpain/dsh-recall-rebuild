@@ -430,6 +430,7 @@ flowchart LR
 - [x] 记忆识海双数据源(原始 / 巩固一键切)+ `MemoryStore.list()` 枚举原语 + 原始层连线现算 —— v0.1.19;
 - [x] 记忆识海 3D 模式(同一套 (u,v) 只加一个 z,轨道相机 + 500ms 飞入纵深 + 记住模式与相机角度 + 按帧耗时自动降级)—— v0.1.21;
 - [x] 3D 参数面板(厚度三档 / 闲置自转 / 透视强度,即时生效并落盘)—— v0.1.22;
+- [x] 修 3D 在真实宿主里首帧抛 `ReferenceError: FISSURE is not defined`(渲染器漏 import,静态检查与 2D 截图都发现不了)+ verify 增加「模块导入完整性」守卫 —— v0.1.23;
 - [ ] 真·嵌入向量通道(需要引入嵌入模型或宿主提供 embedding 接口,暂不破坏零依赖);
 - [ ] 记忆的增改删写入流水线(ADD/UPDATE/DELETE 判定),欢迎提 issue。
 
@@ -463,7 +464,7 @@ npm run test:all          # 全部串跑(CI 跑的就是这套)
 npm pack --dry-run        # 检查发布包内容
 ```
 
-单独的识海验证:`node scripts/verify-sea.mjs`(**109 条**断言,覆盖几何 / 2D 渲染 / 3D 渲染 / 参数面板 / 宿主接线 / 配置透传),`node scripts/verify-sources.mjs`(**22 条**,适配层)。
+单独的识海验证:`node scripts/verify-sea.mjs`(**111 条**断言,覆盖几何 / 2D 渲染 / 3D 渲染 / 参数面板 / 模块导入完整性 / 宿主接线 / 配置透传),`node scripts/verify-sources.mjs`(**22 条**,适配层)。
 
 `scripts/verify.mjs` 覆盖:导出与 Config 默认值、`sanitizeFts`、FTS 命中与 LIKE 兜底、palace(Markdown)与 dsh-memory(JSON)适配器、命名空间隔离、可观测日志、巩固层聚类/遗忘与唤醒、改口覆盖(supersede)与注入判定、联想边半衰期衰减与两跳扩散、重复观察强化与置信度动态化、命令解析、时效衰减、RRF 融合与排序、跨轮去重、字符 n-gram 语义通道与精排、召回查询剔除自身注入(P0 回归)、通用源重读与日志保留、通用源多通道召回、打分长度归一化、未知源显式标注与 `sources` 子命令。它 import 的是 `dist/`,所以必须先 build。
 
