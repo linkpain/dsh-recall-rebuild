@@ -54,7 +54,8 @@
     background: rgba(14,22,38,0.72); border: 1px solid rgba(120,160,210,0.22);
     border-radius: 7px; outline: none; transition: border-color .18s, width .18s; }
   .search input:focus { border-color: rgba(150,195,245,0.5); width: 230px; }
-  .legend { bottom: 18px; left: 24px; display: flex; gap: 14px; font-size: 11px; color: #7d93b3; }
+  .legend { bottom: 18px; left: 24px; display: flex; flex-wrap: wrap; gap: 6px 14px;
+    max-width: calc(100% - 48px); font-size: 11px; color: #7d93b3; }
   .legend span { display: inline-flex; align-items: center; gap: 5px; }
   .legend i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
   .timeline { bottom: 16px; right: 24px; width: min(320px, 42vw); pointer-events: auto; }

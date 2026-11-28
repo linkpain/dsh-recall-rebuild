@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import { dshHome, isFile, isDir, walkFiles, sqliteCtor, combineStores } from './kit.js';
 import { openPrimeMemoryStore, openPalaceStore, openDshMemoryStore } from '../store.js';
 import { openLociSource, openLivingMemorySource, openLtmSource, openPlainDshMemorySource, openNebulaSource, } from './sqlite-sources.js';
-import { openJipikaSource, openLingshuSource, openMnemonSource, openLongtermSource, openHubSource, openMemoryEngineSource, openMemoryTiersSource, openVectorJsonlSource, } from './file-sources.js';
+import { openJipikaSource, openLingshuSource, openMnemonSource, openLongtermSource, openHubSource, openMemoryEngineSource, openMemoryTiersSource, openVectorJsonlSource, openAutoMemorySource, autoMemoryRoot, hasAutoMemoryScopes, } from './file-sources.js';
 function anyFile(...files) {
     return files.some((f) => isFile(f));
 }
@@ -144,6 +144,15 @@ export const SOURCES = [
         kind: 'jsonl',
         open: (ctx) => openVectorJsonlSource(ctx.logger, ctx.refreshMs ?? 0),
         probe: () => hasFilesIn(path.join(dshHome(), 'memory-vector'), ['.jsonl']),
+    },
+    {
+        id: 'auto-memory',
+        label: 'dsh-auto-memory',
+        kind: 'markdown',
+        open: (ctx) => openAutoMemorySource(ctx.logger, ctx.refreshMs ?? 0),
+        // 只认「有作用域目录」的 memory 根:别的插件也可能在 <DSH_HOME>/memory 下
+        // 放自己的一层目录(prime 的 memory.db 就在这儿),不能见目录就当 auto-memory。
+        probe: () => hasAutoMemoryScopes(autoMemoryRoot()),
     },
 ];
 /** 全部可写进配置的源 id(含 auto)。 */

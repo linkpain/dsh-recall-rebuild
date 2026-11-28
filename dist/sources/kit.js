@@ -16,7 +16,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
-import { buildCharNgramVector, cosineSimilarity, fuseRanked, lengthFactor, rankMemories, rerankBySemantic, queryCharTerms, SEMANTIC_MIN_SIM, tokenizeQuery, } from '../store.js';
+import { buildCharNgramVector, fuseRanked, rankDocHits } from '../store.js';
 const require = createRequire(import.meta.url);
 /* ── 路径 ─────────────────────────────────────────────────── */
 /** DSH 状态根:DSH_HOME 优先,否则 ~/.dsh。 */
@@ -102,12 +102,6 @@ export function mtimeDate(file) {
     }
 }
 /* ── 文本记忆源(通用检索) ────────────────────────────────── */
-/* 通用源通道权重。精度高的词元通道给满权;单字覆盖精度最低、只负责
- * 「二元组全落空时别漏」,给 0.6;语义通道能跨同义改写但会奖励词多的条目,
- * 给 0.7 —— 与 prime 适配器的 W_CHAR / W_SEMANTIC 同口径,便于两处对照。 */
-const GENERIC_W_WORD = 1;
-const GENERIC_W_CHAR = 0.6;
-const GENERIC_W_SEMANTIC = 0.7;
 /** 预建字符 n-gram 向量的条数上限:向量是每篇一份特征表,超量会成倍吃内存。 */
 const VEC_MAX_DOCS = 4000;
 /**
@@ -125,24 +119,30 @@ export function makeTextStore(label, docs, logger, opts = {}) {
         return { ok: false, label, search: () => [], close: () => { } };
     }
     const prepare = (list) => list.map((d, i) => ({
-        doc: d,
+        id: d.id,
+        content: d.text,
         body: normText(d.text),
         hints: normText(d.hints.join(' ')),
+        type: d.type,
+        scene: d.scene,
+        family: d.family,
+        ts: d.ts,
         // 语义通道的特征向量一次建好:检索时只算查询侧,不重复解析正文。
         // 但向量是「每篇一份特征表」,超大语料会成倍吃内存 —— 超过 VEC_MAX_DOCS
         // 就不再预建,该批条目只走词元与单字通道(有损,但不至于把内存吃穿)。
-        vec: i < VEC_MAX_DOCS ? buildCharNgramVector(d.text + ' ' + d.hints.join(' ')) : new Map(),
+        gram: i < VEC_MAX_DOCS ? buildCharNgramVector(d.text + ' ' + d.hints.join(' ')) : new Map(),
+        vec: d.vec,
+        vecModel: d.vecModel,
     }));
-    // 检索与枚举两条路都要把 Doc 映射成 MemoryRecord,提到外面共用一份
-    // (list() 在 search 作用域外,原先写在 search 里的映射够不着)。
+    // 枚举路径把 RankItem 映射回 MemoryRecord(展示字段原样,不打分)。
     const toRec = (p) => ({
-        id: p.doc.id,
-        content: p.doc.text,
-        type: p.doc.type,
-        sceneName: p.doc.scene,
-        family: p.doc.family,
+        id: p.id,
+        content: p.content,
+        type: p.type,
+        sceneName: p.scene,
+        family: p.family,
         priority: 0,
-        timestampStr: p.doc.ts,
+        timestampStr: p.ts,
     });
     let prepared = prepare(docs);
     let loadedAt = Date.now();
@@ -163,99 +163,9 @@ export function makeTextStore(label, docs, logger, opts = {}) {
                     /* 刷新失败:沿用旧快照,下个窗口再试 */
                 }
             }
-            const words = tokenizeQuery(query);
-            if (words.length === 0)
-                return [];
-            // 四路候选,末了 RRF 融合 —— 与 prime 适配器同一套方法论。
-            // 旧实现只有「命中词数」一条路:二元组一个都不重合时全空,而多命中一个
-            // 泛用二元组的流水账反倒压过直击要害的那条。分通道后各管一段:
-            // 词元通道保精度、单字通道保召回、语义通道跨同义改写。
-            const lists = [];
-            const weights = [];
-            /** 各通道给出的真实相关度(取最大值),供末尾的时效衰减乘算。 */
-            const baseScore = new Map();
-            const noteScore = (id, s) => {
-                if (s > (baseScore.get(id) ?? 0))
-                    baseScore.set(id, s);
-            };
-            // 通道 1:词元覆盖(原打分,保留为主通道)
-            const wordHits = [];
-            for (const p of prepared) {
-                let hits = 0;
-                for (const w of words) {
-                    if (p.body.includes(w))
-                        hits += 1;
-                    // 标题/标签命中比正文命中更精准:同一词命中标题说明这条记忆「就是讲这个的」
-                    if (p.hints.includes(w))
-                        hits += 1.5;
-                }
-                if (hits <= 0)
-                    continue;
-                // 命中词数按正文长度归一化:长文不白拿「顺带提到」的红利
-                const score = hits * lengthFactor(p.body.length);
-                noteScore(p.doc.id, score);
-                wordHits.push({ rec: toRec(p), score });
-            }
-            wordHits.sort((a, b) => b.score - a.score);
-            if (wordHits.length > 0) {
-                lists.push(wordHits.map((x) => x.rec));
-                weights.push(GENERIC_W_WORD);
-            }
-            // 通道 2:单字覆盖 —— 二元组全部落空时的兜底召回
-            const chars = queryCharTerms(query);
-            if (chars.length > 0) {
-                const charHits = [];
-                for (const p of prepared) {
-                    let hits = 0;
-                    for (const c of chars) {
-                        if (p.body.includes(c))
-                            hits += 1;
-                        if (p.hints.includes(c))
-                            hits += 0.5;
-                    }
-                    if (hits <= 0)
-                        continue;
-                    const score = hits * lengthFactor(p.body.length) * GENERIC_W_CHAR;
-                    noteScore(p.doc.id, score);
-                    charHits.push({ rec: toRec(p), score });
-                }
-                charHits.sort((a, b) => b.score - a.score);
-                if (charHits.length > 0) {
-                    lists.push(charHits.map((x) => x.rec));
-                    weights.push(GENERIC_W_CHAR);
-                }
-            }
-            // 通道 3:字符 n-gram 余弦 —— 唯一能跨过「零字面重叠」的通道
-            const qv = buildCharNgramVector(query);
-            if (qv.size > 0) {
-                const sem = [];
-                for (const p of prepared) {
-                    const sim = cosineSimilarity(qv, p.vec);
-                    if (sim < SEMANTIC_MIN_SIM)
-                        continue;
-                    // 余弦(0–1)放大到与词元命中同一量级,避免语义独中时被衰减压没
-                    noteScore(p.doc.id, sim * 10 * GENERIC_W_SEMANTIC);
-                    sem.push({ rec: toRec(p), sim });
-                }
-                sem.sort((a, b) => b.sim - a.sim);
-                if (sem.length > 0) {
-                    lists.push(sem.map((x) => x.rec));
-                    weights.push(GENERIC_W_SEMANTIC);
-                }
-            }
-            if (lists.length === 0)
-                return [];
-            // 先放大融合池(精排要有候选可挑),再语义精排,最后截断到调用方要的条数。
-            const fused = fuseRanked(lists, Math.max(limit * 4, 40), weights);
-            const reranked = rerankBySemantic(fused, query);
-            // 把各通道的真实相关度还原成 priority 再交给 rankMemories —— 那里算的是
-            // priority × 时效衰减。若 priority 恒为 0(或改用名次序号),乘出来的衰减
-            // 就退化成「名次决定一切」:同样相关的一老一新两条记忆,老的永远压住新的。
-            const ranked = reranked.map((r, i) => ({
-                ...r,
-                priority: baseScore.get(r.id) ?? Math.max(0, reranked.length - i) * 1e-6,
-            }));
-            return rankMemories(ranked, limit, Date.now());
+            // 四路候选(词元/单字/字符 n-gram/稠密邻居)+ RRF 融合 + 语义精排,
+            // 与 prime 适配器同一套方法论,实现在 rankDocHits 里(单一出口)。
+            return rankDocHits(prepared, query, limit, Date.now());
         },
         /**
          * 整库枚举(识海原始记忆视图)。prepared 已经是解析好的快照,这里只做映射,
@@ -651,6 +561,57 @@ export function readJsonDocs(file, rel, type) {
     const out = [];
     harvestJson(parsed, rel, type, out);
     return out;
+}
+/** 解码一个 base64 float32 小端向量;长度不整除 4 或为空时返回 null。 */
+function decodeVecLine(b64) {
+    if (!b64)
+        return null;
+    let buf;
+    try {
+        buf = Buffer.from(b64, 'base64');
+    }
+    catch {
+        return null;
+    }
+    if (buf.length === 0 || buf.length % 4 !== 0)
+        return null;
+    const out = new Float32Array(buf.length / 4);
+    for (let i = 0; i < out.length; i += 1)
+        out[i] = buf.readFloatLE(i * 4);
+    return out;
+}
+/**
+ * 读一个 `.vec` 边车。任何异常(文件缺失、首行无 `#`、行格式坏)都退化为 null ——
+ * 边车只是加分项,读不到就退回字符 n-gram,绝不影响正文召回。
+ */
+export function readVecSidecar(file, maxLines = 20000) {
+    const text = readText(file, 64 * 1024 * 1024);
+    if (!text)
+        return null;
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2)
+        return null;
+    const head = (lines[0] ?? '').trim();
+    if (!head.startsWith('#'))
+        return null;
+    const parts = head.slice(1).split('\t');
+    const model = (parts[0] ?? '').trim();
+    const dims = Number(parts[1] ?? '');
+    if (!model || !Number.isFinite(dims) || dims <= 0)
+        return null;
+    const byId = new Map();
+    for (const line of lines.slice(1, maxLines)) {
+        const tab = line.indexOf('\t');
+        if (tab <= 0)
+            continue;
+        const vec = decodeVecLine(line.slice(tab + 1).trim());
+        if (!vec || vec.length !== dims)
+            continue;
+        byId.set(line.slice(0, tab).trim(), vec);
+    }
+    if (byId.size === 0)
+        return null;
+    return { model: model + ':' + dims, byId: byId };
 }
 /** 读一个 JSONL 文件为 Doc[](逐行解析,坏行跳过;只读尾部 maxLines 行)。 */
 export function readJsonlDocs(file, rel, type, maxLines = 5000) {

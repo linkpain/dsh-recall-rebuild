@@ -25,6 +25,13 @@ export interface Doc {
     rawTs?: number;
     /** 作用域标签(global / workspace / project / session),空 = 未知。 */
     scope?: string;
+    /**
+     * 上游插件自己算好的稠密向量(如 memory-vector 的 `.vec` 边车)。
+     * 有则参与「稠密邻居扩展」通道;没有就只走字符 n-gram,行为不变。
+     */
+    vec?: Float32Array;
+    /** 稠密向量的模型身份(如 `bge-m3:1024`);两侧不同就不比,跨模型余弦没有意义。 */
+    vecModel?: string;
 }
 export declare const normText: (s: string) => string;
 /** 任意时间值 → 毫秒时间戳(秒/毫秒自动判别);非法返回 0。 */
@@ -91,6 +98,17 @@ export declare function harvestJson(value: unknown, rel: string, type: string, o
 }): void;
 /** 读一个 JSON 文件为 Doc[]。 */
 export declare function readJsonDocs(file: string, rel: string, type: string): Doc[];
+export interface VecSidecar {
+    /** 模型身份,如 `bge-m3:1024`;两侧不同就不比。 */
+    model: string;
+    /** 上游条目 id → 向量。 */
+    byId: Map<string, Float32Array>;
+}
+/**
+ * 读一个 `.vec` 边车。任何异常(文件缺失、首行无 `#`、行格式坏)都退化为 null ——
+ * 边车只是加分项,读不到就退回字符 n-gram,绝不影响正文召回。
+ */
+export declare function readVecSidecar(file: string, maxLines?: number): VecSidecar | null;
 /** 读一个 JSONL 文件为 Doc[](逐行解析,坏行跳过;只读尾部 maxLines 行)。 */
 export declare function readJsonlDocs(file: string, rel: string, type: string, maxLines?: number): Doc[];
 export interface SqliteRow {

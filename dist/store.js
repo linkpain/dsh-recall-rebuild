@@ -391,6 +391,194 @@ export function rerankBySemantic(list, query, alpha = SEMANTIC_RERANK_ALPHA) {
     scored.sort((a, b) => b.score - a.score);
     return [...scored.map((s) => s.rec), ...tail];
 }
+/* ── 通用检索出口(所有源共用一套打分) ─────────────────────
+ * prime 之外的 16 个源原本分两拨:14 个走 kit 的三路融合,而 palace 与
+ * dsh-memory 各抄了一份「命中词数」打分 —— 于是 v0.1.15 的检索质量提升
+ * 它们完全没吃到。现在统一出口在这里:三路候选 + RRF + 语义精排 + 稠密邻居扩展。 */
+/* 稠密通道:上游插件已经用真嵌入模型算过一遍,精度高于字符 n-gram,给 1;
+ * 但它是**邻居扩展**,不是一路独立候选 —— 拿 1 篇当种子最多扩 2 篇,见下。 */
+const GENERIC_W_DENSE = 1;
+/* 通用检索的三路权重:词元保精度给满权、单字保召回给 0.6、字符 n-gram 跨同义给 0.7。 */
+const GENERIC_W_WORD = 1;
+const GENERIC_W_CHAR = 0.6;
+const GENERIC_W_SEMANTIC = 0.7;
+/** 稠密邻居扩展的种子数与每种子扩展数(控制单次检索的额外余弦开销)。 */
+const DENSE_SEEDS = 4;
+const DENSE_PER_SEED = 2;
+/** 低于此余弦的邻居不扩:扩进来的是「同一话题里顺带提到」,不是「讲同一件事」。 */
+const DENSE_MIN_SIM = 0.45;
+/**
+ * 稠密余弦:上游向量是「模型原样输出」,本插件不保证它已归一化
+ * (实测有的边车是 L2 归一化的,有的不是),所以两侧都现算模长。
+ * 维度不一致直接返回 0 —— 那是两个模型,不是两个向量。
+ */
+export function denseCosine(a, b) {
+    const n = Math.min(a.length, b.length);
+    if (n === 0 || a.length !== b.length)
+        return 0;
+    let dot = 0;
+    let na = 0;
+    let nb = 0;
+    for (let i = 0; i < n; i++) {
+        const x = a[i] ?? 0;
+        const y = b[i] ?? 0;
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if (na <= 0 || nb <= 0)
+        return 0;
+    return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+/** 归一化正文:检索打分统一用它,避免同一句话因空白/大小写不同被判成两条。 */
+export const normBody = (s) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+/**
+ * 通用源的检索出口(单一实现):三路候选 + RRF 融合 + 语义精排 + 稠密邻居扩展。
+ *
+ * 为什么抽出来:palace 与 dsh-memory 两个适配器原先各自抄了一份「命中词数」打分,
+ * 于是 v0.1.15 给通用源补的三路融合 + 语义精排它们一点没吃到 —— 16 个源里
+ * 只有 14 个享受了检索质量提升,而 README 的通篇叙述看起来像 17 个都有。
+ * 现在它们把解析好的条目交给这里打分,和通用源走同一套方法论。
+ *
+ * @param items 已解析的条目(归一化正文 + 高价值字段 + 展示字段)
+ * @param query 用户查询原文
+ * @param limit 返回条数
+ * @param now 当前时间(毫秒),供时效衰减使用
+ */
+export function rankDocHits(items, query, limit, now) {
+    const words = tokenizeQuery(query);
+    if (words.length === 0)
+        return [];
+    const toRec = (p) => ({
+        id: p.id,
+        content: p.content,
+        type: p.type,
+        sceneName: p.scene,
+        family: p.family,
+        priority: 0,
+        timestampStr: p.ts,
+    });
+    const lists = [];
+    const weights = [];
+    /** 各通道给出的真实相关度(取最大值),供末尾的时效衰减乘算。 */
+    const baseScore = new Map();
+    const noteScore = (id, s) => {
+        if (s > (baseScore.get(id) ?? 0))
+            baseScore.set(id, s);
+    };
+    // 通道 1:词元覆盖(2-gram 保精度)
+    const wordHits = [];
+    for (const p of items) {
+        let hits = 0;
+        for (const w of words) {
+            if (p.body.includes(w))
+                hits += 1;
+            if (p.hints.includes(w))
+                hits += 1.5;
+        }
+        if (hits <= 0)
+            continue;
+        const score = hits * lengthFactor(p.body.length);
+        noteScore(p.id, score);
+        wordHits.push({ rec: toRec(p), score });
+    }
+    wordHits.sort((a, b) => b.score - a.score);
+    if (wordHits.length > 0) {
+        lists.push(wordHits.map((x) => x.rec));
+        weights.push(GENERIC_W_WORD);
+    }
+    // 通道 2:单字覆盖 —— 二元组全部落空时的兜底召回
+    const chars = queryCharTerms(query);
+    if (chars.length > 0) {
+        const charHits = [];
+        for (const p of items) {
+            let hits = 0;
+            for (const c of chars) {
+                if (p.body.includes(c))
+                    hits += 1;
+                if (p.hints.includes(c))
+                    hits += 0.5;
+            }
+            if (hits <= 0)
+                continue;
+            const score = hits * lengthFactor(p.body.length) * GENERIC_W_CHAR;
+            noteScore(p.id, score);
+            charHits.push({ rec: toRec(p), score });
+        }
+        charHits.sort((a, b) => b.score - a.score);
+        if (charHits.length > 0) {
+            lists.push(charHits.map((x) => x.rec));
+            weights.push(GENERIC_W_CHAR);
+        }
+    }
+    // 通道 3:字符 n-gram 余弦 —— 跨同义改写
+    const qv = buildCharNgramVector(query);
+    if (qv.size > 0) {
+        const sem = [];
+        for (const p of items) {
+            const sim = cosineSimilarity(qv, p.gram ?? buildCharNgramVector(p.body + ' ' + p.hints));
+            if (sim < SEMANTIC_MIN_SIM)
+                continue;
+            noteScore(p.id, sim * 10 * GENERIC_W_SEMANTIC);
+            sem.push({ rec: toRec(p), sim });
+        }
+        sem.sort((a, b) => b.sim - a.sim);
+        if (sem.length > 0) {
+            lists.push(sem.map((x) => x.rec));
+            weights.push(GENERIC_W_SEMANTIC);
+        }
+    }
+    if (lists.length === 0)
+        return [];
+    const fused = fuseRanked(lists, Math.max(limit * 4, 40), weights);
+    const reranked = rerankBySemantic(fused, query);
+    // 通道 4:稠密邻居扩展(仅当条目带上游算好的向量)
+    // 拿已排到前排的几条当种子,把「和它们向量上很像」的条目补进来。
+    // 注意这是**扩展**而非独立排序:没有种子就没有这一路,不会凭空引入噪声。
+    const withVec = items.filter((p) => p.vec && p.vec.length > 0);
+    if (withVec.length > 1) {
+        const byId = new Map(withVec.map((p) => [p.id, p]));
+        const seeds = reranked
+            .map((r) => byId.get(r.id))
+            .filter((p) => p !== undefined)
+            .slice(0, DENSE_SEEDS);
+        const added = [];
+        const seenIds = new Set(reranked.map((r) => r.id));
+        for (const seed of seeds) {
+            const sv = seed.vec;
+            const near = [];
+            for (const p of withVec) {
+                if (p.id === seed.id)
+                    continue;
+                if (p.vecModel !== seed.vecModel)
+                    continue; // 跨模型余弦没有意义
+                const sim = denseCosine(sv, p.vec);
+                if (sim < DENSE_MIN_SIM)
+                    continue;
+                near.push({ p, sim });
+            }
+            near.sort((a, b) => b.sim - a.sim);
+            for (const n of near.slice(0, DENSE_PER_SEED)) {
+                if (seenIds.has(n.p.id))
+                    continue;
+                seenIds.add(n.p.id);
+                // 邻居的相关度必须低于种子本身:它只是「同类」,不是「就是这个」
+                noteScore(n.p.id, (baseScore.get(seed.id) ?? 1) * n.sim);
+                added.push(toRec(n.p));
+            }
+        }
+        if (added.length > 0) {
+            lists.push(added);
+            weights.push(GENERIC_W_DENSE);
+        }
+    }
+    const merged = lists.length > 1 ? fuseRanked(lists, Math.max(limit * 4, 40), weights) : reranked;
+    const ranked = merged.map((r, i) => ({
+        ...r,
+        priority: baseScore.get(r.id) ?? Math.max(0, merged.length - i) * 1e-6,
+    }));
+    return rankMemories(ranked, limit, now);
+}
 /**
  * 打开 dsh-prime-memory 的只读记忆库。
  * @param dataDir prime-memory 的数据目录(默认 $DSH_HOME/memory)
@@ -497,7 +685,7 @@ export function openPrimeMemoryStore(dataDir, logger) {
            LIMIT ?`).all(...params, pool);
                 const scored = rows.map((r) => {
                     const rec = mapRow(r);
-                    const hay = `${palaceNorm(rec.content)} ${palaceNorm(rec.type)} ${palaceNorm(rec.sceneName)}`;
+                    const hay = `${normBody(rec.content)} ${normBody(rec.type)} ${normBody(rec.sceneName)}`;
                     let hits = 0;
                     for (const w of words)
                         if (hay.includes(w))
@@ -528,7 +716,7 @@ export function openPrimeMemoryStore(dataDir, logger) {
              LIMIT ?`).all(...chars.map((c) => `%${c}%`), Math.max(limit * 8, 40));
                     const charScored = rows.map((r) => {
                         const rec = mapRow(r);
-                        const hay = palaceNorm(rec.content);
+                        const hay = normBody(rec.content);
                         let hits = 0;
                         for (const c of chars)
                             if (hay.includes(c))
@@ -602,7 +790,6 @@ export function openPrimeMemoryStore(dataDir, logger) {
         },
     };
 }
-const palaceNorm = (s) => s.trim().replace(/\s+/g, ' ').toLowerCase();
 function palaceMtimeDate(file) {
     try {
         const st = fs.statSync(file);
@@ -691,36 +878,25 @@ export function openPalaceStore(cwd, logger) {
         return disabledStore('未找到 memory-palace 记忆文件');
     }
     const sources = [...new Set(entries.map((e) => e.rel))];
+    // 检索视图一次建好:正文与章节都归一化,检索时只打分不重解析。
+    const items = entries.map((e) => ({
+        id: `${e.rel}#L${e.lineNo}`,
+        content: e.content,
+        body: normBody(e.content),
+        hints: normBody(e.section),
+        type: 'palace',
+        scene: e.section,
+        family: e.rel,
+        ts: e.ts,
+    }));
     return {
         ok: true,
         label: `dsh-memory-palace (${sources.join(', ')})`,
         search(query, limit) {
-            const words = tokenizeQuery(query);
-            if (words.length === 0)
-                return [];
-            const scored = [];
-            for (const e of entries) {
-                const nl = palaceNorm(e.content);
-                let hits = 0;
-                for (const w of words)
-                    if (nl.includes(w))
-                        hits += 1;
-                if (hits > 0)
-                    scored.push({ e, hits });
-            }
-            // 命中词数 × 时效衰减(见 rankMemories):命中的都一样多时,不会永远让老条目占位
-            const ranked = scored
-                .slice(0, Math.max(limit * 8, 40))
-                .map(({ e, hits }) => ({
-                id: `${e.rel}#L${e.lineNo}`,
-                content: e.content,
-                type: 'palace',
-                sceneName: e.section,
-                family: e.rel,
-                priority: hits * lengthFactor(e.content.length),
-                timestampStr: e.ts,
-            }));
-            return rankMemories(ranked, limit, Date.now());
+            // 与通用源同一条出口:词元/单字/字符 n-gram(+ 稠密)+ RRF + 语义精排。
+            // 旧实现只有「命中词数」一条路 —— 二元组一个都不重合时全空,而多命中几个
+            // 泛用二元组的长条目反倒压过直击要害的那条。
+            return rankDocHits(items, query, limit, Date.now());
         },
         /** 整库枚举(识海原始记忆视图):新条目在前,不打分。 */
         list(limit) {
@@ -819,39 +995,23 @@ export function openDshMemoryStore(cwd, logger) {
         return disabledStore('未找到 dsh-memory 记忆文件');
     }
     const sources = [...new Set(entries.map((e) => e.rel))];
+    // 检索视图一次建好:keywords 当高价值字段(与标题同权),正文归一化。
+    const items = entries.map((e) => ({
+        id: `${e.rel}#${e.id}`,
+        content: e.content,
+        body: normBody(e.content),
+        hints: normBody(e.keywords.join(' ')),
+        type: 'dsh-memory',
+        scene: e.namespace === 'project' ? 'project 记忆' : 'global 记忆',
+        family: e.rel,
+        ts: epochToDate(e.updatedAt),
+    }));
     return {
         ok: true,
         label: `@max-null/dsh-memory (${sources.join(', ')})`,
         search(query, limit) {
-            const words = tokenizeQuery(query);
-            if (words.length === 0)
-                return [];
-            const scored = [];
-            for (const e of entries) {
-                const cNorm = palaceNorm(e.content);
-                let hits = 0;
-                for (const w of words) {
-                    if (cNorm.includes(w))
-                        hits += 1;
-                    // keywords 命中更精准,权重 ×2
-                    for (const k of e.keywords)
-                        if (palaceNorm(k).includes(w))
-                            hits += 2;
-                }
-                if (hits > 0)
-                    scored.push({ e, hits });
-            }
-            // 命中权重 × 时效衰减(见 rankMemories)
-            const ranked = scored.slice(0, Math.max(limit * 8, 40)).map(({ e, hits }) => ({
-                id: `${e.rel}#${e.id}`,
-                content: e.content,
-                type: 'dsh-memory',
-                sceneName: e.namespace === 'project' ? 'project 记忆' : 'global 记忆',
-                family: e.rel,
-                priority: hits * lengthFactor(e.content.length),
-                timestampStr: epochToDate(e.updatedAt),
-            }));
-            return rankMemories(ranked, limit, Date.now());
+            // 与通用源同一条出口;keywords 作为高价值字段参与加权。
+            return rankDocHits(items, query, limit, Date.now());
         },
         /** 整库枚举(识海原始记忆视图):按更新时间新→旧,不打分。 */
         list(limit) {

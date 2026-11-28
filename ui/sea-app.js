@@ -346,16 +346,26 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+/** 图例最多显示几类;17 个源全铺开会挤满一整行。 */
+const LEGEND_MAX = 7;
+
 function renderLegend(nodes) {
   const counts = new Map();
   for (const n of nodes) counts.set(n.type, (counts.get(n.type) ?? 0) + 1);
-  legendEl.innerHTML = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([type, c]) => {
-      const rgb = TYPE_COLOR[type] ?? [214, 232, 255];
-      return `<span><i style="background:rgb(${rgb.join(',')})"></i>${TYPE_LABEL[type] ?? type} ${c}</span>`;
-    })
-    .join('');
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const shown = sorted.slice(0, LEGEND_MAX);
+  const rest = sorted.slice(LEGEND_MAX);
+  const restCount = rest.reduce((sum, [, c]) => sum + c, 0);
+  legendEl.innerHTML =
+    shown
+      .map(([type, c]) => {
+        const rgb = TYPE_COLOR[type] ?? [214, 232, 255];
+        return `<span><i style="background:rgb(${rgb.join(',')})"></i>${TYPE_LABEL[type] ?? type} ${c}</span>`;
+      })
+      .join('') +
+    (rest.length > 0
+      ? `<span title="${escapeHtml(rest.map(([t]) => TYPE_LABEL[t] ?? t).join('、'))}">其他 ${rest.length} 类 ${restCount}</span>`
+      : '');
 }
 
 function applyTime(cutoff) {

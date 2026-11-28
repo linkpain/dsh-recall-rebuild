@@ -157,9 +157,10 @@ const after = evaluate('新分词(拉丁词 + CJK 2-gram)', function (q, k) {
 });
 store.close();
 
-/* ── 通用源路径(15 个非 prime 适配器共用 makeTextStore)─────────
- * 之前评测只覆盖 prime:其余 15 个源把条目读进内存、走另一套打分,
- * 改动它们时没有任何回归信号。这里用同一批 fixture 跑一遍通用源。 */
+/* ── 通用源路径(14 个源共用 makeTextStore)───────────────────
+ * 之前评测只覆盖 prime:其余源把条目读进内存、走另一套打分,
+ * 改动它们时没有任何回归信号。这里用同一批 fixture 跑一遍通用源。
+ * 另外 2 个非 prime 源(palace / dsh-memory)不走 makeTextStore,单列在下面。 */
 const { makeTextStore } = await import(distUrl + 'sources/kit.js');
 const genericDocs = FIXTURE.map(function (m, i) {
   return {
@@ -174,9 +175,154 @@ const genericDocs = FIXTURE.map(function (m, i) {
   };
 });
 const genericStore = makeTextStore('eval', genericDocs, logger);
-const generic = evaluate('通用源(15 个适配器共用)', function (q, k) {
+const generic = evaluate('通用源(14 个源共用)', function (q, k) {
   return genericStore.search(q, k).map(function (r) { return r.id; });
 });
+
+/* ── 专属适配器路径:palace 与 dsh-memory ───────────────────────
+ * 这两个源不走 makeTextStore:它们各自解析自己的文件格式(Markdown / JSON)。
+ * 于是 v0.1.15 给通用源补的三路融合 + 语义精排,它们一条都没吃到,而评测
+ * 一直只覆盖 prime 与通用源 —— 这条脱节没有任何数字看住。
+ * 这里把同一批 fixture 落成它们各自的真实文件格式,跑真实适配器(不是假数据)。 */
+const { openPalaceStore, openDshMemoryStore } = await import(distUrl + 'store.js');
+const contentToId = new Map(FIXTURE.map(function (m) { return [m.content, m.id]; }));
+function idsOf(list) {
+  return list.map(function (r) { return contentToId.get(r.content) || r.id; });
+}
+const tsOf = function (i) { return '2026-' + pad2(1 + (i % 9)) + '-' + pad2(1 + (i % 27)); };
+
+const adapterTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rebuild-adapters-'));
+const prevHome = process.env.HOME;
+const prevProfile = process.env.USERPROFILE;
+const prevDshHome = process.env.DSH_HOME;
+// 把 home 也指到临时目录:否则本机真实的 ~/.deepseek-harness/MEMORY.md 会混进评测
+process.env.HOME = adapterTmp;
+process.env.USERPROFILE = adapterTmp;
+process.env.DSH_HOME = path.join(adapterTmp, 'dshhome');
+
+// palace:一个 MEMORY.md,按 scene 分 ## 章节。MEMORY.md 的时间线索是文件 mtime,
+// 所以这一路所有条目同一天 —— 时效衰减是常量,测的纯粹是相关性打分。
+const palaceDir = path.join(adapterTmp, 'palace', '.deepseek-harness');
+fs.mkdirSync(palaceDir, { recursive: true });
+const palaceLines = [];
+const byScene = new Map();
+FIXTURE.forEach(function (m) {
+  if (!byScene.has(m.scene)) byScene.set(m.scene, []);
+  byScene.get(m.scene).push(m.content);
+});
+byScene.forEach(function (items, scene) {
+  palaceLines.push('## ' + scene);
+  items.forEach(function (c) { palaceLines.push('- ' + c); });
+  palaceLines.push('');
+});
+fs.writeFileSync(path.join(palaceDir, 'MEMORY.md'), palaceLines.join('\n'), 'utf8');
+const palaceStore = openPalaceStore(path.join(adapterTmp, 'palace'), logger);
+const palace = evaluate('palace(Markdown)', function (q, k) {
+  return idsOf(palaceStore.search(q, k));
+});
+palaceStore.close();
+
+/* 对照:把同一批条目按**旧打分**(只有命中词数一条通道)排一遍。
+ * 没有这一行,「palace 70%」只是个孤立数字 —— 看不出接入共享出口到底值多少。 */
+const { tokenizeQuery, lengthFactor, rankMemories } = await import(distUrl + 'store.js');
+const palaceLegacyItems = [];
+byScene.forEach(function (items, scene) {
+  items.forEach(function (c, i) {
+    palaceLegacyItems.push({ id: contentToId.get(c), content: c, scene: scene, ts: '' });
+  });
+});
+function legacyRankPalace(query, limit) {
+  const words = tokenizeQuery(query);
+  if (words.length === 0) return [];
+  const scored = [];
+  for (const it of palaceLegacyItems) {
+    const nl = it.content.trim().replace(/\s+/g, ' ').toLowerCase();
+    let hits = 0;
+    for (const w of words) if (nl.includes(w)) hits += 1;
+    if (hits > 0) scored.push({ it: it, hits: hits });
+  }
+  const ranked = scored
+    .slice(0, Math.max(limit * 8, 40))
+    .map(function (x) {
+      return {
+        id: x.it.id,
+        content: x.it.content,
+        type: 'palace',
+        sceneName: x.it.scene,
+        family: 'legacy',
+        priority: x.hits * lengthFactor(x.it.content.length),
+        timestampStr: x.it.ts,
+      };
+    });
+  return rankMemories(ranked, limit, Date.now()).map(function (r) { return r.id; });
+}
+const palaceBefore = evaluate('palace(旧打分,仅词元)', function (q, k) { return legacyRankPalace(q, k); });
+
+// dsh-memory:storage-hub 的 JSON 库,blocks 里 status 必须 approved 才生效。
+const dmDir = path.join(process.env.DSH_HOME, 'storages');
+fs.mkdirSync(dmDir, { recursive: true });
+const blocks = FIXTURE.map(function (m, i) {
+  return {
+    id: m.id,
+    namespace: 'global',
+    status: 'approved',
+    injected: true,
+    quarantined: false,
+    kind: 'memory',
+    content: m.content,
+    keywords: [m.scene],
+    createdAt: Date.parse(tsOf(i) + 'T00:00:00Z'),
+    updatedAt: Date.parse(tsOf(i) + 'T00:00:00Z'),
+  };
+});
+fs.writeFileSync(
+  path.join(dmDir, 'memory.json'),
+  JSON.stringify({ unit: { name: 'memory', tables: { blocks: blocks } } }),
+  'utf8',
+);
+const dmStore = openDshMemoryStore(adapterTmp, logger);
+const dshMemory = evaluate('dsh-memory(JSON)', function (q, k) {
+  return idsOf(dmStore.search(q, k));
+});
+dmStore.close();
+
+function legacyRankDshMemory(query, limit) {
+  const words = tokenizeQuery(query);
+  if (words.length === 0) return [];
+  const scored = [];
+  for (const b of blocks) {
+    const cNorm = b.content.trim().replace(/\s+/g, ' ').toLowerCase();
+    let hits = 0;
+    for (const w of words) {
+      if (cNorm.includes(w)) hits += 1;
+      for (const kw of b.keywords) {
+        if (kw.trim().toLowerCase().includes(w)) hits += 2;
+      }
+    }
+    if (hits > 0) scored.push({ b: b, hits: hits });
+  }
+  const ranked = scored.slice(0, Math.max(limit * 8, 40)).map(function (x) {
+    return {
+      id: x.b.id,
+      content: x.b.content,
+      type: 'dsh-memory',
+      sceneName: 'global 记忆',
+      family: 'legacy',
+      priority: x.hits * lengthFactor(x.b.content.length),
+      timestampStr: '',
+    };
+  });
+  return rankMemories(ranked, limit, Date.now()).map(function (r) { return r.id; });
+}
+const dshMemoryBefore = evaluate('dsh-memory(旧打分,仅词元)', function (q, k) {
+  return legacyRankDshMemory(q, k);
+});
+
+// 还原环境,别让评测进程的临时改动漏给后面的路径
+if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
+if (prevDshHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prevDshHome;
+fs.rmSync(adapterTmp, { recursive: true, force: true });
 
 const before = evaluate('旧分词(整句一个词元)', function (q, k) { return legacySearch(tmp, q, k); });
 
@@ -186,7 +332,7 @@ function pct(x) { return (x * 100).toFixed(1) + '%'; }
 console.log('');
 console.log('中文召回评测(40 条 fixture,recall@5 / MRR@5)');
 console.log('');
-[before, after, generic].forEach(function (r) {
+[before, after, generic, palaceBefore, palace, dshMemoryBefore, dshMemory].forEach(function (r) {
   console.log('  ' + r.label.padEnd(26) + ' recall@5 = ' + pct(r.recall).padStart(6) +
     '   MRR@5 = ' + r.mrr.toFixed(3) + '   未命中 ' + r.missCount + '/40');
 });
@@ -195,6 +341,8 @@ console.log('  recall@5 提升 ' + (after.recall - before.recall >= 0 ? '+' : ''
   ((after.recall - before.recall) * 100).toFixed(1) + ' 个百分点');
 if (after.misses.length > 0) console.log('  新实现仍未命中: ' + after.misses.join(', '));
 if (generic.misses.length > 0) console.log('  通用源仍未命中: ' + generic.misses.join(', '));
+if (palace.misses.length > 0) console.log('  palace 仍未命中: ' + palace.misses.join(', '));
+if (dshMemory.misses.length > 0) console.log('  dsh-memory 仍未命中: ' + dshMemory.misses.join(', '));
 if (after.recall <= before.recall) {
   console.error('');
   console.error('失败:新分词的 recall@5 未超过旧分词,改动可能未生效');
@@ -217,6 +365,20 @@ const MIN_GENERIC = Number(process.env.EVAL_MIN_GENERIC ?? 0.65);
 if (generic.recall < MIN_GENERIC) {
   console.error('');
   console.error('失败:通用源 recall@5 ' + pct(generic.recall) + ' 低于回归闸门 ' + pct(MIN_GENERIC));
+  process.exit(1);
+}
+// 两个专属适配器各自单列闸门。它们解析的是不同格式(Markdown / JSON),
+// 但既然已经接入同一条打分出口,成绩就该和通用源同级;任何一侧掉队都说明
+// 「接入」只接了一半(比如正文没归一化、keywords 没当高价值字段)。
+const MIN_ADAPTER = Number(process.env.EVAL_MIN_ADAPTER ?? 0.65);
+if (palace.recall < MIN_ADAPTER) {
+  console.error('');
+  console.error('失败:palace recall@5 ' + pct(palace.recall) + ' 低于回归闸门 ' + pct(MIN_ADAPTER));
+  process.exit(1);
+}
+if (dshMemory.recall < MIN_ADAPTER) {
+  console.error('');
+  console.error('失败:dsh-memory recall@5 ' + pct(dshMemory.recall) + ' 低于回归闸门 ' + pct(MIN_ADAPTER));
   process.exit(1);
 }
 console.log('');

@@ -24,6 +24,9 @@ import {
   openMemoryEngineSource,
   openMemoryTiersSource,
   openVectorJsonlSource,
+  openAutoMemorySource,
+  autoMemoryRoot,
+  hasAutoMemoryScopes,
 } from './file-sources.js';
 import type { LoggerLike, MemoryStore } from '../store.js';
 
@@ -219,6 +222,15 @@ export const SOURCES: SourceSpec[] = [
     kind: 'jsonl',
     open: (ctx) => openVectorJsonlSource(ctx.logger, ctx.refreshMs ?? 0),
     probe: () => hasFilesIn(path.join(dshHome(), 'memory-vector'), ['.jsonl']),
+  },
+  {
+    id: 'auto-memory',
+    label: 'dsh-auto-memory',
+    kind: 'markdown',
+    open: (ctx) => openAutoMemorySource(ctx.logger, ctx.refreshMs ?? 0),
+    // 只认「有作用域目录」的 memory 根:别的插件也可能在 <DSH_HOME>/memory 下
+    // 放自己的一层目录(prime 的 memory.db 就在这儿),不能见目录就当 auto-memory。
+    probe: () => hasAutoMemoryScopes(autoMemoryRoot()),
   },
 ];
 

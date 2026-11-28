@@ -15,5 +15,11 @@ export declare function openHubSource(logger: LoggerLike, refreshMs?: number): M
 export declare function openMemoryEngineSource(logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** dsh-memory-tiers:<DSH_HOME>/storages/memory 的六层文件(L1/L2/L3/DL1/DL2/DL3)。 */
 export declare function openMemoryTiersSource(logger: LoggerLike, refreshMs?: number): MemoryStore;
+/** dsh-auto-memory 的记忆根:默认 <DSH_HOME>/memory(上游可用 config.memoryDir 覆盖)。 */
+export declare function autoMemoryRoot(): string;
+/** 该目录下是否有 auto-memory 的作用域目录(`_user` 或 `--<slug>--`)。 */
+export declare function hasAutoMemoryScopes(root: string): boolean;
+/** dsh-auto-memory:<DSH_HOME>/memory 的 `_user/` 与 `--<slug>--/` 目录。 */
+export declare function openAutoMemorySource(logger: LoggerLike, refreshMs?: number): MemoryStore;
 /** @restregular/dsh-memory:~/.dsh/memory-vector/*.jsonl(按 scope 分文件)。 */
 export declare function openVectorJsonlSource(logger: LoggerLike, refreshMs?: number): MemoryStore;

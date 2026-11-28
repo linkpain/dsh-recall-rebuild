@@ -16,7 +16,7 @@ import {
   BRAIN_ASPECT, BRAIN_DEPTH, BRAIN_OUTLINE, FISSURE,
   brainRadius, clampPitch, nodeMetrics, orbitPoint, perspective, placeNode, placeNode3D, wrapYaw,
 } from './sea-core.js';
-import { TYPE_COLOR } from './sea-view.js';
+import { TYPE_COLOR, growEase, strokeDendrites } from './sea-view.js';
 
 /** 拖动灵敏度(弧度/像素):拖满一屏宽约转 360°。 */
 const DRAG_SENS = 0.005;
@@ -36,6 +36,10 @@ const CLICK_SLOP = 5;
 const CLICK_MS = 250;
 /** 切换动画时长(ms)。 */
 const MORPH_MS = 500;
+/** 出生动画时长(ms),与 2D 一致。 */
+const GROW_MS = 720;
+/** 超过这个条数就不画树突须(与 2D 同阈值)。 */
+const DENDRITE_NODE_CAP = 900;
 
 /** 生成辉光贴图(与 2D 同款,保证切换时点的大小不变)。 */
 function makeGlowSprite(size) {
@@ -439,23 +443,39 @@ export class SeaView3D {
     }
     g.save();
     g.globalCompositeOperation = 'lighter';
+    const axonOf = new Map();
     for (const e of edges) {
       const pa = this._screenNode(e.a);
       const pb = this._screenNode(e.b);
-      const alpha = (0.05 + 0.10 * e.w) * m.bright * ((pa.alpha + pb.alpha) / 2);
-      if (alpha < 0.012) continue;
+      const dx = pb.x - pa.x;
+      const dy = pb.y - pa.y;
+      const len = Math.hypot(dx, dy);
+      const fade = 1 / (1 + len / 90);
+      const alpha = (0.05 + 0.10 * e.w) * m.bright * ((pa.alpha + pb.alpha) / 2) * fade;
+      if (alpha < 0.008) continue;
       g.strokeStyle = `rgba(186,216,255,${alpha.toFixed(3)})`;
       g.lineWidth = 0.7;
+      const bow = Math.min(0.42, len / 520) * (e.a.id < e.b.id ? 1 : -1);
       g.beginPath();
       g.moveTo(pa.x, pa.y);
-      g.lineTo(pb.x, pb.y);
+      g.quadraticCurveTo(
+        (pa.x + pb.x) / 2 - dy * bow,
+        (pa.y + pb.y) / 2 + dx * bow,
+        pb.x,
+        pb.y,
+      );
       g.stroke();
+      const sa = axonOf.get(e.a.id);
+      if (!sa || e.w > sa.w) axonOf.set(e.a.id, { w: e.w, a: Math.atan2(dy, dx), dist: len });
+      const sb = axonOf.get(e.b.id);
+      if (!sb || e.w > sb.w) axonOf.set(e.b.id, { w: e.w, a: Math.atan2(-dy, -dx), dist: len });
     }
     g.restore();
 
     // 节点
     g.save();
     g.globalCompositeOperation = 'lighter';
+    const dendrites = this.lodLevel === 0 && this.nodes.length <= DENDRITE_NODE_CAP;
     for (const n of this.nodes) {
       const p = this._screenNode(n);
       n.x = p.x;
@@ -464,13 +484,14 @@ export class SeaView3D {
       // p.s 已含「近大远小」(0.62–1.38);这里再乘 0.34+0.26*alpha 保持与 2D 同观感
       const size = Math.max(7, m.size * p.s * (0.34 + 0.26 * p.alpha));
       const alpha = m.bright * p.alpha;
+      const rgb = TYPE_COLOR[n.type] ?? [214, 232, 255];
+      if (dendrites) strokeDendrites(g, p.x, p.y, size, rgb, alpha, n.id, axonOf.get(n.id) ?? null);
       g.globalAlpha = Math.min(1, alpha * 0.72);
       g.drawImage(this.glow, p.x - size / 2, p.y - size / 2, size, size);
-      const rgb = TYPE_COLOR[n.type] ?? [214, 232, 255];
       g.globalAlpha = Math.min(1, alpha);
       g.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
       g.beginPath();
-      g.arc(p.x, p.y, Math.max(1.1, size * 0.11), 0, Math.PI * 2);
+      g.arc(p.x, p.y, Math.max(1.2, size * 0.15), 0, Math.PI * 2);
       g.fill();
     }
     g.restore();
@@ -520,6 +541,10 @@ export class SeaView3D {
     const dy = this.dragging ? 0 : Math.cos(t * 0.19) * h * 0.004;
     g.drawImage(this.staticLayer, dx, dy, w, h);
 
+    // 出生生长:与 2D 同一套缓动,只是投影换成 morph 插值后的屏幕坐标。
+    // 逐帧叠在静态层之上,不触发 dirty —— 重建静态层是这里最贵的一步。
+    this._drawGrowing(g, now, dx, dy);
+
     if (this.selected || this.hovered) this._drawFocus(g, t);
     if (this.query) this._drawDim(g);
 
@@ -555,6 +580,36 @@ export class SeaView3D {
       this.lodLevel += 1;
       this.dirty = true;
     }
+  }
+
+  /** 出生生长(与 2D 同款,投影走 _screenNode,所以 morph 过渡期间也对得上)。 */
+  _drawGrowing(g, now, dx, dy) {
+    let alive = false;
+    const m = this.metrics;
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    for (const n of this.nodes) {
+      const age = now - (n.birth ?? -1);
+      if (!(n.birth >= 0) || age > GROW_MS) continue;
+      alive = true;
+      const k = growEase(age / GROW_MS);
+      const p = this._screenNode(n);
+      const size = Math.max(7, m.size * p.s * (0.34 + 0.26 * p.alpha));
+      const scale = k < 1 ? 0.35 + 1.75 * k : 1;
+      const fade = 1 - k;
+      const gs = size * scale;
+      const rgb = TYPE_COLOR[n.type] ?? [214, 232, 255];
+      g.globalAlpha = Math.min(1, 0.9 * fade);
+      g.drawImage(this.glow, p.x + dx - gs / 2, p.y + dy - gs / 2, gs, gs);
+      g.globalAlpha = Math.min(0.6, 0.5 * fade);
+      g.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${(0.55 * fade).toFixed(3)})`;
+      g.lineWidth = 1;
+      g.beginPath();
+      g.arc(p.x + dx, p.y + dy, Math.max(2, gs * 0.34), 0, Math.PI * 2);
+      g.stroke();
+    }
+    g.restore();
+    return alive;
   }
 
   _drawFocus(g, t) {

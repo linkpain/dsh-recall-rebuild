@@ -110,6 +110,47 @@ export declare const SEMANTIC_RERANK_ALPHA = 0.8;
  * 既不丢候选,又不会让长尾的低相似度记录抢到前排。
  */
 export declare function rerankBySemantic(list: MemoryRecord[], query: string, alpha?: number): MemoryRecord[];
+/** 通用检索的条目形状:正文与高价值字段都已归一化,展示字段原样。 */
+export interface RankItem {
+    id: string;
+    /** 展示用原文(不归一化)。 */
+    content: string;
+    /** 归一化正文(检索打分用)。 */
+    body: string;
+    /** 归一化高价值字段(标题/关键词/章节),命中时加权。 */
+    hints: string;
+    type: string;
+    scene: string;
+    family: string;
+    ts: string;
+    /** 预建的字符 n-gram 特征;缺省时现算(大语料由调用方预建,避免每次检索重解析)。 */
+    gram?: Map<string, number>;
+    /** 上游算好的稠密向量(可选)。 */
+    vec?: Float32Array;
+    vecModel?: string;
+}
+/**
+ * 稠密余弦:上游向量是「模型原样输出」,本插件不保证它已归一化
+ * (实测有的边车是 L2 归一化的,有的不是),所以两侧都现算模长。
+ * 维度不一致直接返回 0 —— 那是两个模型,不是两个向量。
+ */
+export declare function denseCosine(a: Float32Array, b: Float32Array): number;
+/** 归一化正文:检索打分统一用它,避免同一句话因空白/大小写不同被判成两条。 */
+export declare const normBody: (s: string) => string;
+/**
+ * 通用源的检索出口(单一实现):三路候选 + RRF 融合 + 语义精排 + 稠密邻居扩展。
+ *
+ * 为什么抽出来:palace 与 dsh-memory 两个适配器原先各自抄了一份「命中词数」打分,
+ * 于是 v0.1.15 给通用源补的三路融合 + 语义精排它们一点没吃到 —— 16 个源里
+ * 只有 14 个享受了检索质量提升,而 README 的通篇叙述看起来像 17 个都有。
+ * 现在它们把解析好的条目交给这里打分,和通用源走同一套方法论。
+ *
+ * @param items 已解析的条目(归一化正文 + 高价值字段 + 展示字段)
+ * @param query 用户查询原文
+ * @param limit 返回条数
+ * @param now 当前时间(毫秒),供时效衰减使用
+ */
+export declare function rankDocHits(items: ReadonlyArray<RankItem>, query: string, limit: number, now: number): MemoryRecord[];
 /**
  * 打开 dsh-prime-memory 的只读记忆库。
  * @param dataDir prime-memory 的数据目录(默认 $DSH_HOME/memory)

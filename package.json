@@ -1,12 +1,12 @@
 {
   "name": "dsh-recall-rebuild",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public",
     "tag": "latest"
   },
-  "description": "重建式回忆增强插件 for DeepSeek Harness:只读现有记忆插件(内置 16 种主流记忆源适配,含 dsh-prime-memory、dsh-mnemon、dsh-loci、dsh-memory-palace 等)的记忆库,auto 模式下多库 RRF 融合,在模型步骤前把检索到的记忆碎片「重建」为带语境与情绪的回忆片段注入,替代生硬的原文/摘要注入。附带「记忆识海」可视化面板:记忆画成深空点云,原始 / 巩固双数据源一键切,2D / 3D 双视角(轨道相机 + 厚度 / 自转 / 透视强度实时可调)。",
+  "description": "重建式回忆增强插件 for DeepSeek Harness:只读现有记忆插件(内置 17 种主流记忆源适配,含 dsh-prime-memory、dsh-mnemon、dsh-loci、dsh-memory-palace 等)的记忆库,auto 模式下多库 RRF 融合,在模型步骤前把检索到的记忆碎片「重建」为带语境与情绪的回忆片段注入,替代生硬的原文/摘要注入。附带「记忆识海」可视化面板:记忆画成深空点云,原始 / 巩固双数据源一键切,2D / 3D 双视角(轨道相机 + 厚度 / 自转 / 透视强度实时可调)。",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

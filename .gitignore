@@ -8,6 +8,7 @@ npm-debug.log*
 .asar-*
 .amdtest/
 .preview/
+scripts/.*
 
 
 # 早期风格参考图(文档未引用,体积大,留本地)
